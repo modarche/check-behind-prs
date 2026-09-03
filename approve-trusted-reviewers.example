@@ -1,0 +1,7 @@
+# Copy to ${XDG_CONFIG_HOME:-~/.config}/check-behind-prs/approve-trusted-reviewers
+# Reviewers whose approval counts as "this content was reviewed", one login per
+# line. A substantive commit must be approved by someone listed here before your
+# name can be added automatically. Include your own login. Never list bots.
+your-login
+some-teammate
+another-teammate

@@ -1,0 +1,4 @@
+# Copy to ${XDG_CONFIG_HOME:-~/.config}/check-behind-prs/approve-authors
+# PR authors whose pull requests may be auto-approved, one login per line.
+some-teammate
+another-teammate

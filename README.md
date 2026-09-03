@@ -1,6 +1,9 @@
 # check-behind-prs
 
-Watches your open GitHub pull requests and acts when one falls behind its base branch. Runs from cron every 5 minutes.
+Two cron automations for GitHub PR busywork, running every 5 minutes:
+
+1. **Your own PRs falling behind** their base branch get updated, or staged for conflict resolution.
+2. **Teammates' PRs you already approved** get re-approved when the only new content is a clean merge, so CI re-runs and its status stays visible.
 
 ```bash
 git clone git@github.com:modarche/check-behind-prs.git \
@@ -11,7 +14,7 @@ make run
 make add-cron
 ```
 
-## What it does
+## Part 1 — your PRs that fell behind
 
 Every run sends a desktop notification for each newly detected PR, then acts based on why it can't merge. Draft PRs and PRs from forks are only ever notified about, never acted on.
 
@@ -44,9 +47,57 @@ Because every PR in a repo shares one working directory, only one session is sta
 
 Completion is detected by checking whether the branch's new head commit carries the `Co-Authored-By: Claude` trailer, so a push by you or a teammate is never misreported as the tool's own work.
 
+## Part 2 — re-approving teammates' PRs after a clean merge
+
+When CI is gated on approval, a teammate merging `master` into an already-approved PR costs the approval (branch protection dismisses it, or it just no longer sits at head) and CI status vanishes from the PR page — even though the merge added nothing to review. `auto-approve-prs.sh` restores it.
+
+**It will only ever approve content that a human has already reviewed.** A PR qualifies only when all of these hold:
+
+- authored by someone in `approve-authors`, not a draft, not from a fork
+- up to date and conflict-free (`mergeable`, and not `BEHIND`/`DIRTY`/`UNKNOWN`)
+- you have approved it at some point (a dismissed approval counts — the dismissal event's `previousReviewState` is checked, since GitHub overwrites the review's state)
+- taking the newest commit approved by anyone in `approve-trusted-reviewers`, **every commit from there to head is a merge with no reviewable content**
+
+The last point is the safety property. So this is allowed:
+
+```
+you approve C1 → C2 (real change) → teammate approves C2 → C3 (clean merge)  → approve
+```
+
+and this is not, because nobody reviewed C2:
+
+```
+you approve C1 → C2 (real change) →                        C3 (clean merge)  → skip
+```
+
+A commit counts as having no reviewable content only if it has exactly two parents, its second parent is already contained in the base branch (merging a *sibling feature branch* pulls in unreviewed code, so that is rejected), and its tree is byte-identical to the automatic merge of its parents — meaning nothing was hand-resolved. Anything that can't be evaluated (no local clone, unfetchable SHA, unknown merge state) is skipped, never approved.
+
+Note the degenerate case: if a trusted reviewer approved the *current head*, the delta is empty and the PR qualifies on that basis alone — even if your own approval is far behind. That is deliberate; a colleague's approval of the head is treated as covering everything up to it.
+
+Your clones are used read-only in spirit but not literally: the tree comparison runs `git merge-tree` with `GIT_OBJECT_DIRECTORY` pointed at a temp dir so it writes nothing, while `git fetch` does add objects and update remote-tracking refs in order to inspect the commits at all. Neither touches your working tree, index, branches, or checked-out state.
+
+Approvals are submitted with no body text, and the tool only ever approves — it never comments, requests changes, or merges.
+
+### Dry-run is the default
+
+Out of the box nothing is approved. A qualifying PR instead raises a persistent, clickable notification — *"PR #233 could be approved"* — that opens the PR. Every decision, including skips and their reasons, is appended to `${XDG_STATE_HOME:-~/.local/state}/check-behind-prs/auto-approve.log`.
+
+Once you trust it, add `APPROVE_DRY_RUN=0` to the cron entry. Then it approves for real, and the notification becomes *"PR #233 auto-approved"*, disappearing after 4 seconds since there is nothing to act on.
+
+### Config (not stored in this repo)
+
+Two files in `${XDG_CONFIG_HOME:-~/.config}/check-behind-prs/`, one login per line, `#` comments allowed. Templates: `approve-authors.example`, `approve-trusted-reviewers.example`.
+
+| File | Meaning |
+| --- | --- |
+| `approve-authors` | Whose PRs may be auto-approved |
+| `approve-trusted-reviewers` | Whose approval counts as "a human reviewed this". Include your own login. Never list bots |
+
+If either file is missing or empty, the script does nothing.
+
 ## Requirements
 
-`gh` (authenticated), `jq`, and on Linux `notify-send` and `xdg-open`. Conflict handling additionally needs `tmux` and `claude`; without them that half is skipped and you just get notifications.
+`gh` (authenticated), `jq`, `git`, and on Linux `notify-send` and `xdg-open`. Conflict handling additionally needs `tmux` and `claude`; without them that half is skipped and you just get notifications. The clean-merge check needs git ≥ 2.38.
 
 ## Configuration
 
@@ -55,9 +106,13 @@ Completion is detected by checking whether the branch's new head commit carries 
 | `DEV_DIR` | Where local clones live (default `~/dev`) |
 | `AUTOFIX_DISABLED=1` | Don't stage `claude` sessions for conflicted PRs |
 | `AUTOUPDATE_DISABLED=1` | Don't auto-update PRs that are merely behind |
+| `APPROVE_DRY_RUN=0` | Actually submit approvals (default: dry-run only) |
+| `APPROVE_DISABLED=1` | Turn off auto-approval entirely |
+| `APPROVE_ORG` | Org to search for teammates' PRs (default `celesta-tech`) |
 
 State lives in `${XDG_STATE_HOME:-~/.local/state}/check-behind-prs/`.
 
 ```bash
-make remove-cron  # stop it
+make run-approve   # run the approval check once (dry-run unless APPROVE_DRY_RUN=0)
+make remove-cron   # stop both automations
 ```

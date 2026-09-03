@@ -21,6 +21,7 @@ send_notification() {
 	local title="$1"
 	local body="$2"
 	local open_url="${3:-}"
+	local expire_ms="${4:-259200000}"
 
 	if [[ "$(uname -s)" == "Darwin" ]]; then
 		osascript -e "display notification $(printf '%s' "$body" | jq -Rsa .) with title $(printf '%s' "$title" | jq -Rsa .)" > /dev/null 2>&1
@@ -29,14 +30,25 @@ send_notification() {
 
 	command -v notify-send > /dev/null 2>&1 || return 0
 
+	local persistent=true
+	[[ "$expire_ms" -le 60000 ]] && persistent=false
+
 	(
 		exec 200>&- 2> /dev/null || true
 
-		if [[ -n "$open_url" ]] && command -v xdg-open > /dev/null 2>&1; then
+		if [[ "$persistent" != "true" ]]; then
+			notify-send \
+				--urgency=low \
+				--expire-time="$expire_ms" \
+				--hint=boolean:transient:true \
+				--app-name="GitHub PR Watch" \
+				"$title" \
+				"$body" > /dev/null 2>&1 || true
+		elif [[ -n "$open_url" ]] && command -v xdg-open > /dev/null 2>&1; then
 			action="$(
 				notify-send \
 					--urgency=normal \
-					--expire-time=259200000 \
+					--expire-time="$expire_ms" \
 					--hint=boolean:resident:true \
 					--hint=boolean:transient:false \
 					--app-name="GitHub PR Watch" \
@@ -48,7 +60,7 @@ send_notification() {
 		else
 			notify-send \
 				--urgency=normal \
-				--expire-time=259200000 \
+				--expire-time="$expire_ms" \
 				--app-name="GitHub PR Watch" \
 				"$title" \
 				"$body" > /dev/null 2>&1 || true
