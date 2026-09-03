@@ -179,6 +179,10 @@ while IFS= read -r pr; do
 		log_decision "$slug" "skip" "no trusted approval found"
 		continue
 	fi
+	if [[ "$trusted_latest" == "$head" ]]; then
+		log_decision "$slug" "skip" "trusted approval already at head, no merge to restore"
+		continue
+	fi
 
 	repo_dir="$DEV_DIR/${repo#*/}"
 	if ! git -C "$repo_dir" rev-parse --git-dir > /dev/null 2>&1; then

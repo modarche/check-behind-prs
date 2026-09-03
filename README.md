@@ -56,7 +56,7 @@ When CI is gated on approval, a teammate merging `master` into an already-approv
 - authored by someone in `approve-authors`, not a draft, not from a fork
 - up to date and conflict-free (`mergeable`, and not `BEHIND`/`DIRTY`/`UNKNOWN`)
 - you have approved it at some point (a dismissed approval counts — the dismissal event's `previousReviewState` is checked, since GitHub overwrites the review's state)
-- taking the newest commit approved by anyone in `approve-trusted-reviewers`, **every commit from there to head is a merge with no reviewable content**
+- taking the newest commit approved by anyone in `approve-trusted-reviewers`, **that commit is not the head, and every commit from there to head is a merge with no reviewable content**
 
 The last point is the safety property. So this is allowed:
 
@@ -72,7 +72,7 @@ you approve C1 → C2 (real change) →                        C3 (clean merge) 
 
 A commit counts as having no reviewable content only if it has exactly two parents, its second parent is already contained in the base branch (merging a *sibling feature branch* pulls in unreviewed code, so that is rejected), and its tree is byte-identical to the automatic merge of its parents — meaning nothing was hand-resolved. Anything that can't be evaluated (no local clone, unfetchable SHA, unknown merge state) is skipped, never approved.
 
-Note the degenerate case: if a trusted reviewer approved the *current head*, the delta is empty and the PR qualifies on that basis alone — even if your own approval is far behind. That is deliberate; a colleague's approval of the head is treated as covering everything up to it.
+There must be a genuine merge delta. If a trusted reviewer's approval already sits at the current head, the PR is skipped — nothing was merged since the content was last reviewed, so there is no dismissed approval to restore and no reason to add your name. That guard is what keeps a colleague approving the head from pulling your approval along with it.
 
 Your clones are used read-only in spirit but not literally: the tree comparison runs `git merge-tree` with `GIT_OBJECT_DIRECTORY` pointed at a temp dir so it writes nothing, while `git fetch` does add objects and update remote-tracking refs in order to inspect the commits at all. Neither touches your working tree, index, branches, or checked-out state.
 

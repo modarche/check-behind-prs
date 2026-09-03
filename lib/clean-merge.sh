@@ -44,6 +44,7 @@ chain_is_clean_merges_only() {
 	target_resolved="$(git -C "$repo_dir" rev-parse "$target" 2> /dev/null || true)"
 	cur="$(git -C "$repo_dir" rev-parse "$head" 2> /dev/null || true)"
 	[[ -n "$target_resolved" && -n "$cur" ]] || return 1
+	[[ "$cur" != "$target_resolved" ]] || return 1
 
 	while [[ "$i" -lt "$max_depth" ]]; do
 		[[ "$cur" == "$target_resolved" ]] && return 0
