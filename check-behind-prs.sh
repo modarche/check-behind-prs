@@ -8,11 +8,7 @@ for cmd in gh jq; do
 	}
 done
 
-if [[ "$(uname -s)" == "Darwin" ]]; then
-	OPEN_CMD="open"
-	NOTIFY_CMD="osascript"
-	STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/check-behind-prs"
-else
+if [[ "$(uname -s)" != "Darwin" ]]; then
 	command -v notify-send > /dev/null 2>&1 || {
 		echo "Missing required command: notify-send" >&2
 		exit 1
@@ -21,61 +17,25 @@ else
 		echo "Missing required command: xdg-open" >&2
 		exit 1
 	}
-	OPEN_CMD="xdg-open"
-	NOTIFY_CMD="notify-send"
-	STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/check-behind-prs"
 fi
 
-mkdir -p "$STATE_DIR"
-STATE_FILE="$STATE_DIR/behind.json"
+PATH="$PATH:$HOME/.local/bin"
 
-setup_linux_notification_env() {
-	[[ "$(uname -s)" == "Linux" ]] || return 0
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/lib/common.sh"
+source "$SCRIPT_DIR/lib/notify.sh"
 
-	export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+if command -v flock > /dev/null 2>&1; then
+	exec 200> "$LOCK_FILE"
+	flock -n 200 || exit 0
+fi
 
-	if [[ -z "${DBUS_SESSION_BUS_ADDRESS:-}" && -S "$XDG_RUNTIME_DIR/bus" ]]; then
-		export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
-	fi
-
-	if [[ -z "${WAYLAND_DISPLAY:-}" ]]; then
-		WAYLAND_DISPLAY="$(find "$XDG_RUNTIME_DIR" -maxdepth 1 -type s -name 'wayland-*' -printf '%f\n' 2> /dev/null | head -n1 || true)"
-		[[ -n "$WAYLAND_DISPLAY" ]] && export WAYLAND_DISPLAY
-	fi
-}
-
-notify_pr() {
-	local repo="$1"
-	local title="$2"
-	local url="$3"
-	local merge_state="$4"
-
-	local notif_title="GitHub PR behind base"
-	[[ "$merge_state" == "DIRTY" ]] && notif_title="GitHub PR behind base (conflicts)"
-
-	if [[ "$(uname -s)" == "Darwin" ]]; then
-		"$NOTIFY_CMD" -e "display notification $(printf '%s' "$title - $repo" | jq -Rsa .) with title $(printf '%s' "$notif_title" | jq -Rsa .)" > /dev/null
-		return 0
-	fi
-
-	(
-		action="$(
-			"$NOTIFY_CMD" \
-				--urgency=normal \
-				--expire-time=259200000 \
-				--hint=boolean:resident:true \
-				--hint=boolean:transient:false \
-				--app-name="GitHub PR Watch" \
-				--action="default=Open PR" \
-				"$notif_title" \
-				"$title
-$repo" 2> /dev/null || true
-		)"
-		[[ "$action" == "default" ]] && "$OPEN_CMD" "$url" > /dev/null 2>&1
-	) > /dev/null 2>&1 &
-}
-
-setup_linux_notification_env
+AUTOFIX_ENABLED=true
+if [[ "${AUTOFIX_DISABLED:-}" == "1" ]]; then
+	AUTOFIX_ENABLED=false
+elif ! command -v tmux > /dev/null 2>&1 || ! command -v claude > /dev/null 2>&1; then
+	AUTOFIX_ENABLED=false
+fi
 
 query='
   query($endCursor: String) {
@@ -91,6 +51,11 @@ query='
           url
           mergeStateStatus
           mergeable
+          baseRefName
+          headRefName
+          headRefOid
+          isDraft
+          isCrossRepository
           repository {
             nameWithOwner
           }
@@ -124,7 +89,12 @@ while :; do
         repo: .repository.nameWithOwner,
         title,
         url,
-        mergeStateStatus
+        mergeStateStatus,
+        baseRefName,
+        headRefName,
+        headRefOid,
+        isDraft,
+        isCrossRepository
       }
   ' <<< "$response" >> "$tmp_file"
 
@@ -138,8 +108,8 @@ done
 current_json="$(jq -s 'map(select(type == "object"))' "$tmp_file")"
 current_keys="$(jq -r '.[].key' <<< "$current_json" | sort -u)"
 
-if [[ -f "$STATE_FILE" ]]; then
-	previous_keys="$(jq -r '.[]' "$STATE_FILE" 2> /dev/null | sort -u || true)"
+if [[ -f "$BEHIND_STATE_FILE" ]]; then
+	previous_keys="$(jq -r '.[]' "$BEHIND_STATE_FILE" 2> /dev/null | sort -u || true)"
 else
 	previous_keys=""
 fi
@@ -154,8 +124,90 @@ if [[ -n "$new_keys" ]]; then
 		title="$(jq -r '.title' <<< "$pr")"
 		url="$(jq -r '.url' <<< "$pr")"
 		merge_state="$(jq -r '.mergeStateStatus' <<< "$pr")"
-		notify_pr "$repo" "$title" "$url" "$merge_state"
+
+		notif_title="GitHub PR behind base"
+		[[ "$merge_state" == "DIRTY" ]] && notif_title="GitHub PR behind base (conflicts)"
+		send_notification "$notif_title" "$title
+$repo" "$url"
 	done <<< "$new_keys"
 fi
 
-jq -r '.[].key' <<< "$current_json" | sort -u | jq -R . | jq -s . > "$STATE_FILE"
+jq -r '.[].key' <<< "$current_json" | sort -u | jq -R . | jq -s . > "$BEHIND_STATE_FILE"
+
+if [[ "$AUTOFIX_ENABLED" == "true" ]]; then
+	autofix_repos="$(jq -r 'keys[]' "$AUTOFIX_STATE_FILE" 2> /dev/null || true)"
+	if [[ -n "$autofix_repos" ]]; then
+		while IFS= read -r repo; do
+			[[ -n "$repo" ]] || continue
+			entry="$(jq -c --arg repo "$repo" '.[$repo]' "$AUTOFIX_STATE_FILE")"
+			window_name="$(jq -r '.windowName' <<< "$entry")"
+			head_ref="$(jq -r '.headRef' <<< "$entry")"
+			head_sha_before="$(jq -r '.headShaBefore' <<< "$entry")"
+			repo_dir="$DEV_DIR/${repo#*/}"
+
+			window_alive="false"
+			tmux list-windows -t "$TMUX_SESSION" -F '#{window_name}' 2> /dev/null | grep -qxF "$window_name" && window_alive="true"
+
+			current_sha="$(git -C "$repo_dir" ls-remote origin "refs/heads/$head_ref" 2> /dev/null | cut -f1 || true)"
+
+			if [[ "$window_alive" == "false" ]]; then
+				jq --arg repo "$repo" 'del(.[$repo])' "$AUTOFIX_STATE_FILE" > "$AUTOFIX_STATE_FILE.tmp" && mv "$AUTOFIX_STATE_FILE.tmp" "$AUTOFIX_STATE_FILE"
+			elif [[ -n "$current_sha" && "$current_sha" != "$head_sha_before" ]]; then
+				pushed_by_claude="false"
+				if git -C "$repo_dir" fetch origin "refs/heads/$head_ref" > /dev/null 2>&1; then
+					commit_msg="$(git -C "$repo_dir" log -1 --format=%B "$current_sha" 2> /dev/null || true)"
+					grep -qF 'Co-Authored-By: Claude <noreply@anthropic.com>' <<< "$commit_msg" && pushed_by_claude="true"
+				fi
+
+				if [[ "$pushed_by_claude" == "true" ]]; then
+					(sleep 5 && tmux kill-window -t "$TMUX_SESSION:$window_name" > /dev/null 2>&1) &
+					disown 2> /dev/null || true
+					jq --arg repo "$repo" 'del(.[$repo])' "$AUTOFIX_STATE_FILE" > "$AUTOFIX_STATE_FILE.tmp" && mv "$AUTOFIX_STATE_FILE.tmp" "$AUTOFIX_STATE_FILE"
+				else
+					jq --arg repo "$repo" --arg sha "$current_sha" '.[$repo].headShaBefore = $sha' "$AUTOFIX_STATE_FILE" > "$AUTOFIX_STATE_FILE.tmp" && mv "$AUTOFIX_STATE_FILE.tmp" "$AUTOFIX_STATE_FILE"
+				fi
+			fi
+		done <<< "$autofix_repos"
+	fi
+
+	eligible_json="$(jq -c '[.[] | select(.isDraft == false and .isCrossRepository == false and .mergeStateStatus == "DIRTY")] | group_by(.repo) | map(.[0])' <<< "$current_json")"
+
+	while IFS= read -r pr; do
+		[[ -n "$pr" && "$pr" != "null" ]] || continue
+		repo="$(jq -r '.repo' <<< "$pr")"
+
+		jq -e --arg repo "$repo" 'has($repo)' "$AUTOFIX_STATE_FILE" > /dev/null 2>&1 && continue
+
+		owner="${repo%%/*}"
+		short_repo="${repo#*/}"
+		url="$(jq -r '.url' <<< "$pr")"
+		pr_number="${url##*/}"
+		base_ref="$(jq -r '.baseRefName' <<< "$pr")"
+		head_ref="$(jq -r '.headRefName' <<< "$pr")"
+		title="$(jq -r '.title' <<< "$pr")"
+
+		"$SCRIPT_DIR/pr-autofix-worker.sh" "$owner" "$short_repo" "$pr_number" "$base_ref" "$head_ref" "$url" "$title" < /dev/null || true
+	done < <(jq -c '.[]' <<< "$eligible_json")
+fi
+
+if [[ "${AUTOUPDATE_DISABLED:-}" != "1" ]]; then
+	behind_json="$(jq -c '[.[] | select(.isDraft == false and .isCrossRepository == false and .mergeStateStatus == "BEHIND")]' <<< "$current_json")"
+
+	while IFS= read -r pr; do
+		[[ -n "$pr" && "$pr" != "null" ]] || continue
+		repo="$(jq -r '.repo' <<< "$pr")"
+		url="$(jq -r '.url' <<< "$pr")"
+		head_oid="$(jq -r '.headRefOid' <<< "$pr")"
+		pr_number="${url##*/}"
+		attempt_key="$repo#$pr_number"
+
+		last_attempt="$(jq -r --arg key "$attempt_key" '.[$key] // ""' "$UPDATE_ATTEMPT_FILE" 2> /dev/null || true)"
+		[[ "$last_attempt" == "$head_oid" ]] && continue
+
+		jq --arg key "$attempt_key" --arg sha "$head_oid" '.[$key] = $sha' "$UPDATE_ATTEMPT_FILE" > "$UPDATE_ATTEMPT_FILE.tmp" \
+			&& mv "$UPDATE_ATTEMPT_FILE.tmp" "$UPDATE_ATTEMPT_FILE"
+
+		gh api --method PUT "repos/$repo/pulls/$pr_number/update-branch" \
+			-f expected_head_sha="$head_oid" > /dev/null 2>&1 || true
+	done < <(jq -c '.[]' <<< "$behind_json")
+fi

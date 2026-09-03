@@ -1,0 +1,57 @@
+You are fixing GitHub PR #{{PR_NUMBER}} in {{OWNER}}/{{REPO}} ("{{PR_TITLE}}"), which
+is behind its base branch and/or has merge conflicts.
+
+Repo: {{OWNER}}/{{REPO}}
+PR: {{PR_URL}}
+Base branch: {{BASE_REF}}
+Head branch: {{HEAD_REF}}
+Working directory: this exact checkout ({{REPO_DIR}}) — your own real clone, not a
+throwaway copy.
+
+Before touching anything:
+1. Run `git status --porcelain`. If it is not empty, or the currently checked-out
+   branch looks like it has unrelated work in progress, STOP and tell me — do not
+   switch branches out from under existing work.
+2. Note the currently checked-out branch so you can switch back to it at the end.
+3. Run `git fetch origin`. If a local branch named `{{HEAD_REF}}` already exists and
+   has commits not present on `origin/{{HEAD_REF}}`, that's unpushed local work —
+   STOP and ask rather than overwriting it.
+
+If the checks above pass:
+4. Check out `{{HEAD_REF}}` (create it tracking `origin/{{HEAD_REF}}` if it doesn't
+   exist locally yet).
+5. Merge the base branch in: `git merge origin/{{BASE_REF}}`.
+6. If there are conflicts, resolve them with intent in mind: for each conflicting
+   hunk, use `git log`, `git show`, and `git blame` on the relevant commits on BOTH
+   sides (base and head) to understand why each change was made, then produce a
+   resolution that honors both intents wherever that's actually possible. Do not
+   blindly prefer one side or mechanically keep both hunks without understanding
+   them.
+7. Lockfiles (composer.lock, package-lock.json, yarn.lock, pnpm-lock.yaml,
+   Cargo.lock, go.sum, etc.) are generated files — never
+   hand-resolve their conflict markers. Resolve the source file they're generated
+   from (composer.json, package.json, etc.) normally, then regenerate the lockfile
+   by running an update scoped to exactly the package(s) whose version constraint
+   changed in this PR — diff composer.json/package.json between the merge parents
+   to find them.
+   - For composer specifically: run `composer update <package/name> [<package/name-2> ...]`
+     for just those packages. NEVER pass `--with-all-dependencies` (or run a bare
+     unscoped `composer update`) — it lets the update cascade into those packages'
+     own transitive dependencies too, pulling in far more than this PR intends.
+   - Use the project's normal way of invoking these tools — check its README/
+     Makefile/shell aliases for a wrapper (e.g. some of these repos exec composer
+     inside a dev container via an alias like `dphp composer update <package>`)
+     rather than assuming a bare `composer`/`npm` on the host is right.
+   - The same "scope it to what actually changed, don't let it cascade" principle
+     applies to any other package manager's update command too.
+8. Verify your fix using the project's own test/build tooling — check its README
+   and Makefile for the right commands — before committing.
+9. Commit with a clear message and include this trailer:
+   Co-Authored-By: Claude <noreply@anthropic.com>
+10. Push: `git push origin HEAD:{{HEAD_REF}}`. Never force-push under any
+    circumstance — if the push is rejected, stop and tell me rather than retrying
+    with force.
+11. Switch back to the branch you noted in step 2.
+
+I'm here and watching — if you're genuinely unsure about anything at any point,
+stop and ask rather than guessing.
