@@ -48,9 +48,13 @@ notify_pr() {
 	local repo="$1"
 	local title="$2"
 	local url="$3"
+	local merge_state="$4"
+
+	local notif_title="GitHub PR behind base"
+	[[ "$merge_state" == "DIRTY" ]] && notif_title="GitHub PR behind base (conflicts)"
 
 	if [[ "$(uname -s)" == "Darwin" ]]; then
-		"$NOTIFY_CMD" -e "display notification $(printf '%s' "$title - $repo" | jq -Rsa .) with title \"GitHub PR behind base\"" > /dev/null
+		"$NOTIFY_CMD" -e "display notification $(printf '%s' "$title - $repo" | jq -Rsa .) with title $(printf '%s' "$notif_title" | jq -Rsa .)" > /dev/null
 		return 0
 	fi
 
@@ -63,7 +67,7 @@ notify_pr() {
 				--hint=boolean:transient:false \
 				--app-name="GitHub PR Watch" \
 				--action="default=Open PR" \
-				"GitHub PR behind base" \
+				"$notif_title" \
 				"$title
 $repo" 2> /dev/null || true
 		)"
@@ -86,6 +90,7 @@ query='
           title
           url
           mergeStateStatus
+          mergeable
           repository {
             nameWithOwner
           }
@@ -113,12 +118,13 @@ while :; do
 
 	jq -c '
     .data.viewer.pullRequests.nodes[]
-    | select(.mergeStateStatus == "BEHIND")
+    | select(.mergeStateStatus == "BEHIND" or (.mergeStateStatus == "DIRTY" and .mergeable == "CONFLICTING"))
     | {
         key: (.repository.nameWithOwner + "|" + .url),
         repo: .repository.nameWithOwner,
         title,
-        url
+        url,
+        mergeStateStatus
       }
   ' <<< "$response" >> "$tmp_file"
 
@@ -147,7 +153,8 @@ if [[ -n "$new_keys" ]]; then
 		repo="$(jq -r '.repo' <<< "$pr")"
 		title="$(jq -r '.title' <<< "$pr")"
 		url="$(jq -r '.url' <<< "$pr")"
-		notify_pr "$repo" "$title" "$url"
+		merge_state="$(jq -r '.mergeStateStatus' <<< "$pr")"
+		notify_pr "$repo" "$title" "$url" "$merge_state"
 	done <<< "$new_keys"
 fi
 
