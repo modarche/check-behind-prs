@@ -38,10 +38,14 @@ If the checks above pass:
      for just those packages. NEVER pass `--with-all-dependencies` (or run a bare
      unscoped `composer update`) — it lets the update cascade into those packages'
      own transitive dependencies too, pulling in far more than this PR intends.
-   - Use the project's normal way of invoking these tools — check its README/
-     Makefile/shell aliases for a wrapper (e.g. some of these repos exec composer
-     inside a dev container via an alias like `dphp composer update <package>`)
-     rather than assuming a bare `composer`/`npm` on the host is right.
+   - Run the tool the way this project runs it, rather than assuming a bare
+     `composer`/`npm` on the host is right. If the repo has a
+     `docker-compose.dev.yml` with a php service, that means running it inside
+     the container:
+     `docker compose -f docker-compose.dev.yml exec -T php composer update <package/name>`
+     Use `-T` (no pseudo-TTY) rather than `-it`, since you are running without a
+     terminal. Check the repo's README and Makefile for the project's own
+     wrapper before falling back to this.
    - The same "scope it to what actually changed, don't let it cascade" principle
      applies to any other package manager's update command too.
 8. Verify your fix using the project's own test/build tooling — check its README
