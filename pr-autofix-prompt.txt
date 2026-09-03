@@ -42,10 +42,9 @@ If the checks above pass:
      `composer`/`npm` on the host is right. If the repo has a
      `docker-compose.dev.yml` with a php service, that means running it inside
      the container:
-     `docker compose -f docker-compose.dev.yml exec -T php composer update <package/name>`
-     Use `-T` (no pseudo-TTY) rather than `-it`, since you are running without a
-     terminal. Check the repo's README and Makefile for the project's own
-     wrapper before falling back to this.
+     `docker compose -f docker-compose.dev.yml exec -it php composer update <package/name>`
+     Check the repo's README and Makefile for the project's own wrapper before
+     falling back to this.
    - The same "scope it to what actually changed, don't let it cascade" principle
      applies to any other package manager's update command too.
 8. Verify your fix using the project's own test/build tooling — check its README
