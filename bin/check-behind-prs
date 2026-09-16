@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/../lib/common.sh"
+source "$SCRIPT_DIR/../lib/notify.sh"
+source "$SCRIPT_DIR/../lib/prs.sh"
+source "$SCRIPT_DIR/../lib/autofix.sh"
+source "$SCRIPT_DIR/../lib/update-branch.sh"
+
+require_commands gh jq || exit 1
+if [[ "$(uname -s)" != "Darwin" ]]; then
+	require_commands notify-send xdg-open || exit 1
+fi
+
+if command -v flock > /dev/null 2>&1; then
+	exec 200> "$LOCK_FILE"
+	flock -n 200 || exit 0
+fi
+
+stuck_json="$(gh_my_stuck_prs)" || exit 1
+current_keys="$(jq -r '.[].key' <<< "$stuck_json" | sort -u)"
+
+if [[ -f "$BEHIND_STATE_FILE" ]]; then
+	previous_keys="$(jq -r '.[]' "$BEHIND_STATE_FILE" 2> /dev/null | sort -u || true)"
+else
+	previous_keys=""
+fi
+
+new_keys="$(comm -13 <(printf '%s\n' "$previous_keys") <(printf '%s\n' "$current_keys"))"
+
+while IFS= read -r key; do
+	[[ -n "$key" ]] || continue
+	pr="$(jq -r --arg key "$key" '.[] | select(.key == $key)' <<< "$stuck_json")"
+	repo="$(jq -r '.repo' <<< "$pr")"
+	title="$(jq -r '.title' <<< "$pr")"
+	url="$(jq -r '.url' <<< "$pr")"
+	merge_state="$(jq -r '.mergeStateStatus' <<< "$pr")"
+
+	notif_title="GitHub PR behind base"
+	[[ "$merge_state" == "DIRTY" ]] && notif_title="GitHub PR behind base (conflicts)"
+	send_notification "$notif_title" "$title
+$repo" "$url"
+done <<< "$new_keys"
+
+printf '%s' "$current_keys" | jq -R . | jq -s . > "$BEHIND_STATE_FILE"
+
+if autofix_available; then
+	autofix_reap_windows
+	autofix_stage_conflicted "$stuck_json"
+fi
+
+if [[ "${AUTOUPDATE_DISABLED:-}" != "1" ]]; then
+	update_behind_prs "$stuck_json"
+fi

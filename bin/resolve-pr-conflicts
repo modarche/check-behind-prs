@@ -1,0 +1,157 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/../lib/common.sh"
+
+usage() {
+	cat << 'EOF'
+Stage a claude session that merges a PR's base branch in and resolves the
+conflicts. Works on anyone's PR, not just your own.
+
+Usage:
+  resolve-pr-conflicts [options] <pr>
+
+  <pr>  PR url, owner/repo#number, owner/repo/number, or a bare number when
+        run inside the repo (or with --repo)
+
+Options:
+  --repo OWNER/REPO  repository the bare number belongs to
+  --force            stage even when the PR merges cleanly already
+  --dry-run          run every check and print the prompt, stage nothing
+  -h, --help         this text
+
+The prompt is pasted into the session but never submitted: switch to the tmux
+window, read it, and press Enter yourself.
+EOF
+}
+
+target_repo=""
+target_number=""
+force=false
+dry_run=false
+
+parse_target() {
+	local raw="${1#PR=}" rest
+
+	case "$raw" in
+		*://*/pull/*)
+			rest="${raw#*://}"
+			rest="${rest#*/}"
+			target_repo="${rest%%/pull/*}"
+			rest="${rest#*/pull/}"
+			target_number="${rest%%/*}"
+			;;
+		*/*\#*)
+			target_repo="${raw%%\#*}"
+			target_number="${raw##*\#}"
+			;;
+		*/*/*)
+			target_number="${raw##*/}"
+			target_repo="${raw%/*}"
+			;;
+		*/*) return 1 ;;
+		*) target_number="$raw" ;;
+	esac
+
+	[[ "$target_number" =~ ^[0-9]+$ ]]
+}
+
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+		--repo)
+			[[ $# -ge 2 ]] || {
+				echo "--repo needs an OWNER/REPO" >&2
+				exit 1
+			}
+			target_repo="$2"
+			shift 2
+			;;
+		--force)
+			force=true
+			shift
+			;;
+		--dry-run)
+			dry_run=true
+			shift
+			;;
+		-h | --help)
+			usage
+			exit 0
+			;;
+		-*)
+			echo "Unknown option: $1" >&2
+			exit 1
+			;;
+		*)
+			parse_target "$1" || {
+				echo "Cannot read '$1' as a pull request" >&2
+				exit 1
+			}
+			shift
+			;;
+	esac
+done
+
+[[ -n "$target_number" ]] || {
+	usage >&2
+	exit 1
+}
+
+require_commands gh jq git tmux claude || exit 1
+
+fields='number,url,title,baseRefName,headRefName,isCrossRepository,mergeStateStatus,mergeable,state,author'
+
+gh_args=(pr view "$target_number" --json "$fields")
+[[ -n "$target_repo" ]] && gh_args+=(--repo "$target_repo")
+
+pr_json="$(gh "${gh_args[@]}")" || exit 1
+
+url="$(jq -r '.url' <<< "$pr_json")"
+title="$(jq -r '.title' <<< "$pr_json")"
+number="$(jq -r '.number' <<< "$pr_json")"
+base_ref="$(jq -r '.baseRefName' <<< "$pr_json")"
+head_ref="$(jq -r '.headRefName' <<< "$pr_json")"
+state="$(jq -r '.state' <<< "$pr_json")"
+merge_state="$(jq -r '.mergeStateStatus' <<< "$pr_json")"
+mergeable="$(jq -r '.mergeable' <<< "$pr_json")"
+author="$(jq -r '.author.login' <<< "$pr_json")"
+cross_repo="$(jq -r '.isCrossRepository' <<< "$pr_json")"
+
+path="${url#*://}"
+path="${path#*/}"
+owner="${path%%/*}"
+path="${path#*/}"
+short_repo="${path%%/*}"
+
+if [[ "$state" != "OPEN" ]]; then
+	echo "$owner/$short_repo#$number is $state" >&2
+	exit 1
+fi
+
+if [[ "$cross_repo" == "true" ]]; then
+	echo "$owner/$short_repo#$number comes from a fork; its branch cannot be pushed from your clone" >&2
+	exit 1
+fi
+
+case "$merge_state" in
+	DIRTY | BEHIND) ;;
+	UNKNOWN) echo "GitHub has not computed this PR's merge state yet — staging anyway" >&2 ;;
+	*)
+		if [[ "$force" != "true" ]]; then
+			echo "$owner/$short_repo#$number is not conflicted or behind (mergeStateStatus=$merge_state mergeable=$mergeable); pass --force to stage anyway" >&2
+			exit 1
+		fi
+		;;
+esac
+
+worker_args=(--verbose)
+[[ "$dry_run" == "true" ]] && worker_args+=(--dry-run)
+
+viewer="$(gh api user --jq '.login' 2> /dev/null || true)"
+if [[ -n "$viewer" && -n "$author" && "$author" != "null" && "$author" != "$viewer" ]]; then
+	worker_args+=(--author "$author")
+fi
+
+exec "$LIBEXEC_DIR/stage-pr-autofix" "${worker_args[@]}" \
+	"$owner" "$short_repo" "$number" "$base_ref" "$head_ref" "$url" "$title"

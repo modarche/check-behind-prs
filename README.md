@@ -1,9 +1,10 @@
 # check-behind-prs
 
-Two cron automations for GitHub PR busywork, running every 5 minutes:
+GitHub PR busywork, handled for you:
 
-1. **Your own PRs falling behind** their base branch get updated, or staged for conflict resolution.
-2. **Teammates' PRs you already approved** get re-approved when the only new content is a clean merge, so CI re-runs and its status stays visible.
+1. **Your own PRs falling behind** their base branch get updated, or staged for conflict resolution — every 5 minutes, from cron.
+2. **Any PR, on demand** — including a teammate's — gets a conflict-resolution session staged with one command.
+3. **Teammates' PRs you already approved** get re-approved when the only new content is a clean merge, so CI re-runs and its status stays visible — also every 5 minutes.
 
 ```bash
 git clone git@github.com:modarche/check-behind-prs.git \
@@ -13,6 +14,28 @@ make run
 # add to cron to run every 5 minutes
 make add-cron
 ```
+
+| Command | What it does |
+| --- | --- |
+| `make run` | check your PRs once |
+| `make resolve PR=<url\|owner/repo#n>` | stage a conflict-resolution session for one PR |
+| `make run-approve` | check teammates' PRs once (dry-run unless `APPROVE_DRY_RUN=0`) |
+| `make add-cron` / `make remove-cron` | start / stop the two cron entries |
+| `make check` | syntax-check every script |
+
+## Layout
+
+| Path | |
+| --- | --- |
+| `bin/check-behind-prs` | cron entry point — your own PRs |
+| `bin/auto-approve-prs` | cron entry point — teammates' PRs you already approved |
+| `bin/resolve-pr-conflicts` | manual — stage a conflict-resolution session for one PR |
+| `libexec/stage-pr-autofix` | opens the tmux window and pastes the prompt; both entry points call it |
+| `lib/` | shared helpers: state paths, notifications, PR queries, autofix, clean-merge detection |
+| `prompts/pr-autofix.txt` | the conflict-resolution prompt template |
+| `examples/` | config templates |
+
+Upgrading from the flat layout: run `make add-cron` once — it repoints cron at `bin/` and drops the old entries.
 
 ## Part 1 — your PRs that fell behind
 
@@ -47,9 +70,32 @@ Because every PR in a repo shares one working directory, only one session is sta
 
 Completion is detected by checking whether the branch's new head commit carries the `Co-Authored-By: Claude` trailer, so a push by you or a teammate is never misreported as the tool's own work.
 
-## Part 2 — re-approving teammates' PRs after a clean merge
+## Part 2 — resolving conflicts on any PR, on demand
 
-When CI is gated on approval, a teammate merging `master` into an already-approved PR costs the approval (branch protection dismisses it, or it just no longer sits at head) and CI status vanishes from the PR page — even though the merge added nothing to review. `auto-approve-prs.sh` restores it.
+Cron only ever touches your own PRs. When a *teammate's* PR is blocking you, stage the same session by hand:
+
+```bash
+make resolve PR=https://github.com/acme/widgets/pull/42
+make resolve PR=acme/widgets#42
+./bin/resolve-pr-conflicts 42                  # inside the repo's clone
+./bin/resolve-pr-conflicts --repo acme/widgets 42
+```
+
+Same tmux window, same prompt, same manual Enter — with one addition: when the PR is not yours, the prompt says so by name and tells Claude to only ever add a merge commit on top, never to rebase, amend or squash someone else's commits, and to stop if the push is rejected for lack of access.
+
+It refuses, with a reason, when the PR is closed, comes from a fork (its branch isn't in your remote, so nothing local can push it), has no clone under `~/dev`, or when a session is already open for that repo. A PR that merges cleanly is refused too, since there is nothing to resolve — pass `--force` if you want the session anyway.
+
+| Option | |
+| --- | --- |
+| `--repo OWNER/REPO` | repository a bare PR number belongs to |
+| `--dry-run` | run every check and print the prompt, stage nothing |
+| `--force` | stage even when the PR merges cleanly already |
+
+`make resolve` passes extra flags through `ARGS`: `make resolve PR=… ARGS=--dry-run`.
+
+## Part 3 — re-approving teammates' PRs after a clean merge
+
+When CI is gated on approval, a teammate merging `master` into an already-approved PR costs the approval (branch protection dismisses it, or it just no longer sits at head) and CI status vanishes from the PR page — even though the merge added nothing to review. `bin/auto-approve-prs` restores it.
 
 **It will only ever approve content that a human has already reviewed.** A PR qualifies only when all of these hold:
 
@@ -86,7 +132,7 @@ Once you trust it, add `APPROVE_DRY_RUN=0` to the cron entry. Then it approves f
 
 ### Config (not stored in this repo)
 
-Two files in `${XDG_CONFIG_HOME:-~/.config}/check-behind-prs/`, one login per line, `#` comments allowed. Templates: `approve-authors.example`, `approve-trusted-reviewers.example`.
+Two files in `${XDG_CONFIG_HOME:-~/.config}/check-behind-prs/`, one login per line, `#` comments allowed. Templates live in `examples/`.
 
 | File | Meaning |
 | --- | --- |
@@ -97,7 +143,7 @@ If either file is missing or empty, the script does nothing.
 
 ## Requirements
 
-`gh` (authenticated), `jq`, `git`, and on Linux `notify-send` and `xdg-open`. Conflict handling additionally needs `tmux` and `claude`; without them that half is skipped and you just get notifications. The clean-merge check needs git ≥ 2.38.
+`gh` (authenticated), `jq`, `git`, and on Linux `notify-send` and `xdg-open`. Conflict resolution additionally needs `tmux` and `claude`; without them that half is skipped and you just get notifications. The clean-merge check needs git ≥ 2.38.
 
 ## Configuration
 
@@ -105,14 +151,10 @@ If either file is missing or empty, the script does nothing.
 | --- | --- |
 | `DEV_DIR` | Where local clones live (default `~/dev`) |
 | `AUTOFIX_DISABLED=1` | Don't stage `claude` sessions for conflicted PRs |
+| `AUTOFIX_MODEL` | Model the staged session runs (default `sonnet`) |
 | `AUTOUPDATE_DISABLED=1` | Don't auto-update PRs that are merely behind |
 | `APPROVE_DRY_RUN=0` | Actually submit approvals (default: dry-run only) |
 | `APPROVE_DISABLED=1` | Turn off auto-approval entirely |
 | `APPROVE_ORG` | Org to search for teammates' PRs (default `celesta-tech`) |
 
 State lives in `${XDG_STATE_HOME:-~/.local/state}/check-behind-prs/`.
-
-```bash
-make run-approve   # run the approval check once (dry-run unless APPROVE_DRY_RUN=0)
-make remove-cron   # stop both automations
-```

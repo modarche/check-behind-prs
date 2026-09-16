@@ -1,19 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-for cmd in gh jq git; do
-	command -v "$cmd" > /dev/null 2>&1 || {
-		echo "Missing required command: $cmd" >&2
-		exit 1
-	}
-done
-
-PATH="$PATH:$HOME/.local/bin"
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/lib/common.sh"
-source "$SCRIPT_DIR/lib/notify.sh"
-source "$SCRIPT_DIR/lib/clean-merge.sh"
+source "$SCRIPT_DIR/../lib/common.sh"
+source "$SCRIPT_DIR/../lib/notify.sh"
+source "$SCRIPT_DIR/../lib/clean-merge.sh"
+
+require_commands gh jq git || exit 1
 
 [[ "${APPROVE_DISABLED:-}" == "1" ]] && exit 0
 
@@ -184,7 +177,7 @@ while IFS= read -r pr; do
 		continue
 	fi
 
-	repo_dir="$DEV_DIR/${repo#*/}"
+	repo_dir="$(repo_dir_for "$repo")"
 	if ! git -C "$repo_dir" rev-parse --git-dir > /dev/null 2>&1; then
 		log_decision "$slug" "skip" "no local clone at $repo_dir"
 		continue
@@ -223,6 +216,5 @@ $repo" "" 4000
 		fi
 	fi
 
-	jq --arg key "$slug" --arg sha "$head" '.[$key] = $sha' "$APPROVED_STATE_FILE" > "$APPROVED_STATE_FILE.tmp" \
-		&& mv "$APPROVED_STATE_FILE.tmp" "$APPROVED_STATE_FILE"
+	json_update "$APPROVED_STATE_FILE" --arg key "$slug" --arg sha "$head" '.[$key] = $sha'
 done < <(printf '%s\n' "$candidates")

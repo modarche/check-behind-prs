@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+VERBOSE=false
+DRY_RUN=false
+pr_author=""
+
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+		--verbose)
+			VERBOSE=true
+			shift
+			;;
+		--dry-run)
+			DRY_RUN=true
+			shift
+			;;
+		--author)
+			[[ $# -ge 2 ]] || {
+				echo "--author needs a login" >&2
+				exit 2
+			}
+			pr_author="$2"
+			shift 2
+			;;
+		--)
+			shift
+			break
+			;;
+		*) break ;;
+	esac
+done
+
+if [[ $# -ne 7 ]]; then
+	echo "usage: stage-pr-autofix [--verbose] [--dry-run] [--author LOGIN] <owner> <repo> <number> <base_ref> <head_ref> <url> <title>" >&2
+	exit 2
+fi
+
+owner="$1"
+repo="$2"
+pr_number="$3"
+base_ref="$4"
+head_ref="$5"
+pr_url="$6"
+pr_title="$7"
+
+exec 200>&- || true
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/../lib/common.sh"
+source "$SCRIPT_DIR/../lib/autofix.sh"
+
+skip() {
+	[[ "$VERBOSE" == "true" ]] || exit 0
+	echo "$*" >&2
+	exit 1
+}
+
+have_commands git jq tmux claude || skip "needs git, jq, tmux and claude on PATH"
+[[ -f "$AUTOFIX_PROMPT_FILE" ]] || skip "prompt template missing: $AUTOFIX_PROMPT_FILE"
+
+repo_dir="$(repo_dir_for "$repo")"
+window_name="${repo}-pr${pr_number}"
+state_key="$owner/$repo"
+
+git -C "$repo_dir" rev-parse --git-dir > /dev/null 2>&1 \
+	|| skip "no clone at $repo_dir (set DEV_DIR if your clones live elsewhere)"
+
+origin_url="$(git -C "$repo_dir" remote get-url origin 2> /dev/null || true)"
+case "$origin_url" in
+	*"$owner/$repo" | *"$owner/$repo.git") ;;
+	*) skip "origin of $repo_dir is $origin_url, not $owner/$repo" ;;
+esac
+
+head_sha_before="$(git -C "$repo_dir" ls-remote origin "refs/heads/$head_ref" 2> /dev/null | cut -f1 || true)"
+[[ -n "$head_sha_before" ]] || skip "branch $head_ref not found on origin (a fork PR cannot be resolved here)"
+
+if command -v flock > /dev/null 2>&1; then
+	exec 201> "$STAGE_LOCK_FILE"
+	flock -w 10 201 || skip "another PR session is being staged right now"
+fi
+
+if jq -e --arg repo "$state_key" 'has($repo)' "$AUTOFIX_STATE_FILE" > /dev/null 2>&1; then
+	skip "a session for $state_key is already staged; finish or close it first"
+fi
+
+while IFS= read -r existing; do
+	[[ -n "$existing" ]] || continue
+	[[ "$existing" == "${repo}-pr"* ]] \
+		&& skip "tmux window $TMUX_SESSION:$existing is already working in $repo_dir"
+done < <(tmux list-windows -t "$TMUX_SESSION" -F '#{window_name}' 2> /dev/null || true)
+
+author_note=""
+if [[ -n "$pr_author" ]]; then
+	author_note="This PR belongs to @$pr_author, not to you. Only ever add a merge commit on
+top of their work: never rebase, amend, squash or otherwise rewrite their
+commits, and never touch anything the merge itself doesn't require. If the push
+is rejected because you lack write access, stop and tell me.
+
+"
+fi
+
+build_prompt() {
+	local tmpl
+	tmpl="$(cat "$AUTOFIX_PROMPT_FILE")"
+	tmpl="${tmpl//\{\{OWNER\}\}/$owner}"
+	tmpl="${tmpl//\{\{REPO\}\}/$repo}"
+	tmpl="${tmpl//\{\{PR_NUMBER\}\}/$pr_number}"
+	tmpl="${tmpl//\{\{PR_TITLE\}\}/$pr_title}"
+	tmpl="${tmpl//\{\{PR_URL\}\}/$pr_url}"
+	tmpl="${tmpl//\{\{BASE_REF\}\}/$base_ref}"
+	tmpl="${tmpl//\{\{HEAD_REF\}\}/$head_ref}"
+	tmpl="${tmpl//\{\{REPO_DIR\}\}/$repo_dir}"
+	tmpl="${tmpl//\{\{AUTHOR_NOTE\}\}/$author_note}"
+	printf '%s' "$tmpl"
+}
+
+if [[ "$DRY_RUN" == "true" ]]; then
+	printf 'Would stage %s:%s in %s\n\n' "$TMUX_SESSION" "$window_name" "$repo_dir"
+	build_prompt
+	printf '\n'
+	exit 0
+fi
+
+clear_state() {
+	json_update "$AUTOFIX_STATE_FILE" --arg repo "$state_key" 'del(.[$repo])'
+}
+
+json_update "$AUTOFIX_STATE_FILE" \
+	--arg repo "$state_key" \
+	--argjson prNumber "$pr_number" \
+	--arg headRef "$head_ref" \
+	--arg baseRef "$base_ref" \
+	--arg windowName "$window_name" \
+	--arg headShaBefore "$head_sha_before" \
+	--arg startedAt "$(date -u +%FT%TZ)" \
+	'.[$repo] = {prNumber: $prNumber, headRef: $headRef, baseRef: $baseRef, windowName: $windowName, headShaBefore: $headShaBefore, startedAt: $startedAt}'
+
+exec 201>&- || true
+
+claude_cmd="$(autofix_claude_cmd)"
+
+if tmux has-session -t "$TMUX_SESSION" 2> /dev/null; then
+	tmux new-window -t "$TMUX_SESSION" -n "$window_name" -c "$repo_dir" "$claude_cmd" || {
+		clear_state
+		skip "could not open a tmux window in $TMUX_SESSION"
+	}
+else
+	tmux new-session -d -s "$TMUX_SESSION" -n "$window_name" -c "$repo_dir" "$claude_cmd" || {
+		clear_state
+		skip "could not start the $TMUX_SESSION tmux session"
+	}
+fi
+
+claude_ready=false
+for _ in $(seq 1 60); do
+	pane="$(tmux capture-pane -p -t "$TMUX_SESSION:$window_name" 2> /dev/null || true)"
+	if grep -qF 'Claude Code v' <<< "$pane"; then
+		claude_ready=true
+		break
+	fi
+	sleep 1
+done
+
+if [[ "$claude_ready" != "true" ]]; then
+	clear_state
+	tmux kill-window -t "$TMUX_SESSION:$window_name" > /dev/null 2>&1 || true
+	skip "claude did not start in $TMUX_SESSION:$window_name within 60s"
+fi
+
+prompt_buffer="pr-autofix-prompt-$window_name"
+tmux set-buffer -b "$prompt_buffer" -- "$(build_prompt)"
+tmux paste-buffer -b "$prompt_buffer" -t "$TMUX_SESSION:$window_name"
+tmux delete-buffer -b "$prompt_buffer" > /dev/null 2>&1 || true
+
+[[ "$VERBOSE" == "true" ]] && printf 'Prompt staged in %s:%s — review it there and press Enter to run.\n' "$TMUX_SESSION" "$window_name"
+exit 0

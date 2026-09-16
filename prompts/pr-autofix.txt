@@ -8,7 +8,7 @@ Head branch: {{HEAD_REF}}
 Working directory: this exact checkout ({{REPO_DIR}}) — your own real clone, not a
 throwaway copy.
 
-Before touching anything:
+{{AUTHOR_NOTE}}Before touching anything:
 1. Run `git status --porcelain`. If it is not empty, or the currently checked-out
    branch looks like it has unrelated work in progress, STOP and tell me — do not
    switch branches out from under existing work.
