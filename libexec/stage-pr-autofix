@@ -80,8 +80,14 @@ if command -v flock > /dev/null 2>&1; then
 	flock -w 10 201 || skip "another PR session is being staged right now"
 fi
 
-if jq -e --arg repo "$state_key" 'has($repo)' "$AUTOFIX_STATE_FILE" > /dev/null 2>&1; then
-	skip "a session for $state_key is already staged; finish or close it first"
+staged_window="$(jq -r --arg repo "$state_key" '.[$repo].windowName // empty' "$AUTOFIX_STATE_FILE" 2> /dev/null || true)"
+if [[ -n "$staged_window" ]]; then
+	if autofix_window_exists "$staged_window"; then
+		skip "a session for $state_key is already staged in $TMUX_SESSION:$staged_window; finish or close it first"
+	fi
+	if [[ "$VERBOSE" == "true" ]]; then
+		echo "dropping a stale mark for $state_key: $TMUX_SESSION:$staged_window is gone" >&2
+	fi
 fi
 
 while IFS= read -r existing; do
