@@ -4,7 +4,7 @@ update_behind_prs() {
 	local stuck_json="$1"
 	local behind_json pr repo url head_oid pr_number attempt_key last_attempt
 
-	behind_json="$(jq -c '[.[] | select(.isDraft == false and .isCrossRepository == false and .mergeStateStatus == "BEHIND")]' <<< "$stuck_json")"
+	behind_json="$(jq -c '[.[] | select(.isDraft == false and .isCrossRepository == false and .behind)]' <<< "$stuck_json")"
 
 	while IFS= read -r pr; do
 		[[ -n "$pr" && "$pr" != "null" ]] || continue

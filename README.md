@@ -49,6 +49,8 @@ Every run sends a desktop notification for each newly detected PR, then acts bas
 
 ### Behind without conflicts
 
+GitHub only reports a PR as `BEHIND` when its base branch requires branches to be up to date before merging, so a PR stacked on another feature branch shows `CLEAN` however far behind it is. A PR therefore also counts as behind whenever GitHub would offer you its "Update branch" button (`viewerCanUpdateBranch`), unless it has conflicts or GitHub is still computing its merge state.
+
 Handled by `PUT /repos/{owner}/{repo}/pulls/{n}/update-branch`, the same call GitHub's "Update branch" button makes. Nothing is cloned, checked out or switched locally, so it also works for repos you don't have on disk. The PR's current head SHA is sent as `expected_head_sha`, so if someone pushes between detection and the update, GitHub refuses instead of merging into an unexpected state. A PR that can't be updated (branch protection, for example) is retried once per new commit rather than every 5 minutes.
 
 ### Behind with conflicts
