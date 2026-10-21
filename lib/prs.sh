@@ -19,6 +19,7 @@ MY_STUCK_PRS_QUERY='
           headRefOid
           isDraft
           isCrossRepository
+          viewerCanUpdateBranch
           repository {
             nameWithOwner
           }
@@ -41,13 +42,15 @@ gh_my_stuck_prs() {
 		page="$(
 			jq -c '
         [ .data.viewer.pullRequests.nodes[]
-          | select(.mergeStateStatus == "BEHIND" or (.mergeStateStatus == "DIRTY" and .mergeable == "CONFLICTING"))
+          | .behind = (.mergeStateStatus == "BEHIND" or (.viewerCanUpdateBranch and (.mergeStateStatus | IN("DIRTY", "UNKNOWN") | not)))
+          | select(.behind or (.mergeStateStatus == "DIRTY" and .mergeable == "CONFLICTING"))
           | {
               key: (.repository.nameWithOwner + "|" + .url),
               repo: .repository.nameWithOwner,
               title,
               url,
               mergeStateStatus,
+              behind,
               baseRefName,
               headRefName,
               headRefOid,
