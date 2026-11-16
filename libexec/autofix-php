@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/../lib/common.sh"
+source "$SCRIPT_DIR/../lib/autofix.sh"
+
+run_dir="${PR_AUTOFIX_RUN_DIR:-}"
+if [[ -z "$run_dir" || ! -f "$run_dir/run.json" ]]; then
+	echo "autofix-php: PR_AUTOFIX_RUN_DIR does not point at a run directory" >&2
+	exit 2
+fi
+if [[ $# -eq 0 ]]; then
+	echo "usage: autofix-php <command> [args...]" >&2
+	exit 2
+fi
+
+run_json="$run_dir/run.json"
+if [[ "$(jq -r '.runtime.kind' "$run_json")" != "container" ]]; then
+	echo "autofix-php: this run has no container: $(jq -r '.runtime.reason' "$run_json")" >&2
+	exit 2
+fi
+
+eval "$(jq -r '@sh "run_id=\(.runId) worktree=\(.worktree) git_common_dir=\(.gitCommonDir) image=\(.runtime.image) app_dir=\(.runtime.appDir) work_dir=\(.runtime.workDir) network=\(.runtime.network)"' "$run_json")"
+
+autofix_start_sidecars "$run_dir" || exit 1
+autofix_wait_sidecars "$run_dir" || exit 1
+
+mkdir -p "$AUTOFIX_CACHE_DIR/composer"
+
+args=(run --rm -i --pull never
+	--user "$(id -u):$(id -g)"
+	--label "pr-autofix=$run_id"
+	--network "$network"
+	--env-file "$run_dir/container.env"
+	-e HOME=/tmp
+	-e COMPOSER_HOME=/tmp/composer
+	-e COMPOSER_CACHE_DIR=/tmp/composer-cache
+	-e XDEBUG_MODE=off
+	-v "$worktree:$app_dir"
+	-v "$git_common_dir:$git_common_dir:ro"
+	-v "$AUTOFIX_CACHE_DIR/composer:/tmp/composer-cache"
+	-w "$work_dir")
+[[ -t 0 && -t 1 ]] && args+=(-t)
+[[ -f "$HOME/.composer/auth.json" ]] && args+=(-v "$HOME/.composer/auth.json:/tmp/composer/auth.json:ro")
+
+exec docker "${args[@]}" "$image" "$@"

@@ -1,0 +1,11 @@
+   This repo's CI has no manual trigger, so watch whatever your push started:
+   a. `gh run list --branch {{HEAD_REF}} --commit <pushed sha> --json databaseId,workflowName,status,conclusion,url`
+      Retry for up to two minutes. If no run appears, record done and say that CI was not checked.
+   b. `{{STATUS_CMD}} waiting-ci "<n> CI run(s) for <short sha>" <url of the main run>`
+   c. Watch each run with the Bash tool's run_in_background, so you are woken when it ends:
+      `gh run watch <id> --exit-status --interval 60 > {{RUN_DIR}}/ci-watch-<id>.log 2>&1`
+      Don't poll in the foreground, and don't read those logs while the runs are going. When a watch
+      ends, read the result with `gh run view <id> --json conclusion,headSha,jobs`.
+   d. A cancelled run was superseded by a newer one: watch the newest run for the current head of
+      origin/{{HEAD_REF}} instead.
+   e. All runs succeeded: record done.

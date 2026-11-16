@@ -1,0 +1,9 @@
+   There is no throwaway dev container for this repo ({{RUNTIME_REASON}}), so verify statically:
+   - No conflict markers left: `git diff --check`, and grep the resolved files for `<<<<<<<`,
+     `=======` and `>>>>>>>`.
+   - Syntax checks for what you touched, with tools on this machine (YAML parses, `go vet` for Go,
+     `node --check` for JavaScript, and so on).
+   - Anything the repo's own tooling can do on its own, such as a Makefile target that runs a fresh
+     `docker run` of this directory. Never use one that goes through `docker compose`, `docker exec`
+     or an already running container: those reach the developer's shared environment and their clone.
+   Say plainly in your summary that tests did not run locally; CI is the test signal.

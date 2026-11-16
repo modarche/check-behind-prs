@@ -1,0 +1,22 @@
+   Never run php, composer, bin/console, bin/phpunit, make or docker directly. The repo's Makefile
+   and docker-compose.dev.yml point at the developer's shared dev container and their clone, and
+   those commands are blocked in this session. Run each one through
+
+       {{PHP_CMD}} <command> [args...]
+
+   which runs it in a throwaway container from the repo's dev image ({{IMAGE}}), with this
+   worktree mounted at {{APP_DIR}}. {{STORES}} Nothing in it can reach the developer's own
+   databases, so drop, create and migrate freely there. Other hosts the app talks to (queues,
+   search, other services) don't resolve from it.
+   - Start with `{{PHP_CMD}} composer install --no-interaction --no-scripts`. Keep `--no-scripts` on
+     every composer command: the repos' post-install scripts install git hooks, which fails in a
+     worktree and isn't wanted here.
+   - Prepare the test database the way the repo's Makefile `test` target does (read it), running
+     each command through {{PHP_CMD}} with `--env=test`.
+   - Run the tests that cover the conflicted files and the code the merge brought in, not the full
+     suite, e.g. `{{PHP_CMD}} env XDEBUG_MODE=off bin/phpunit tests/Path/To/SomeTest.php`. Send the
+     full output to a file in {{RUN_DIR}} and read it there rather than truncating it.
+   - Tests that fail only because a host they need doesn't resolve here are not yours to fix: list
+     them in your summary as not run locally, and let CI cover them.
+   - If {{REPO_DIR}}/.git/hooks/pre-commit lints staged files (reading it is fine), run the same lint
+     through {{PHP_CMD}} on the files you edited by hand.

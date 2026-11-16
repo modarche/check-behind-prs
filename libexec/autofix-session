@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/../lib/common.sh"
+
+run_dir="${1:?usage: autofix-session <run_dir>}"
+run_json="$run_dir/run.json"
+
+COMPOSE_PROJECT_NAME="$(jq -r '.composeProject' "$run_json")"
+export COMPOSE_PROJECT_NAME
+export PR_AUTOFIX_RUN_DIR="$run_dir"
+
+exec claude \
+	--model "$(jq -r '.model' "$run_json")" \
+	--permission-mode auto \
+	--setting-sources project \
+	--strict-mcp-config \
+	--settings "$run_dir/settings.json" \
+	--name "$(jq -r '.sessionName' "$run_json")" \
+	"$(cat "$run_dir/prompt.txt")"

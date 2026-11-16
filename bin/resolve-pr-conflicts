@@ -6,8 +6,9 @@ source "$SCRIPT_DIR/../lib/common.sh"
 
 usage() {
 	cat << 'EOF'
-Stage a claude session that merges a PR's base branch in and resolves the
-conflicts. Works on anyone's PR, not just your own.
+Start an unattended claude session that merges a PR's base branch in, resolves
+the conflicts, pushes, and sees CI through. Works on anyone's PR, not just your
+own.
 
 Usage:
   resolve-pr-conflicts [options] <pr>
@@ -17,12 +18,14 @@ Usage:
 
 Options:
   --repo OWNER/REPO  repository the bare number belongs to
-  --force            stage even when the PR merges cleanly already
-  --dry-run          run every check and print the prompt, stage nothing
+  --force            start even when the PR merges cleanly already, or when your
+                     clone has local work on the PR's branch
+  --dry-run          run every check and print the runtime, settings and prompt;
+                     start nothing
   -h, --help         this text
 
-The prompt is pasted into the session but never submitted: switch to the tmux
-window, read it, and press Enter yourself.
+The session runs in its own worktree and throwaway containers, never in your
+clone. Watch it with: tmux attach -t pr-autofix
 EOF
 }
 
@@ -98,7 +101,7 @@ done
 	exit 1
 }
 
-require_commands gh jq git tmux claude || exit 1
+require_commands gh jq git tmux claude docker || exit 1
 
 fields='number,url,title,baseRefName,headRefName,isCrossRepository,mergeStateStatus,mergeable,state,author'
 
@@ -147,6 +150,7 @@ esac
 
 worker_args=(--verbose)
 [[ "$dry_run" == "true" ]] && worker_args+=(--dry-run)
+[[ "$force" == "true" ]] && worker_args+=(--force)
 
 viewer="$(gh api user --jq '.login' 2> /dev/null || true)"
 if [[ -n "$viewer" && -n "$author" && "$author" != "null" && "$author" != "$viewer" ]]; then

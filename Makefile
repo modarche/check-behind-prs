@@ -5,8 +5,9 @@ CHECK := $(ROOT)/bin/check-behind-prs
 APPROVE := $(ROOT)/bin/auto-approve-prs
 RESOLVE := $(ROOT)/bin/resolve-pr-conflicts
 WORKER := $(ROOT)/libexec/stage-pr-autofix
+SESSION_HELPERS := $(addprefix $(ROOT)/libexec/,autofix-session autofix-php autofix-status autofix-hook)
 
-EXECUTABLES := $(CHECK) $(APPROVE) $(RESOLVE) $(WORKER)
+EXECUTABLES := $(CHECK) $(APPROVE) $(RESOLVE) $(WORKER) $(SESSION_HELPERS)
 SOURCES := $(EXECUTABLES) $(wildcard $(ROOT)/lib/*.sh)
 
 CRON_TAG := \# check-behind-prs
@@ -20,7 +21,7 @@ CRON_FILTER := grep -Fv '$(CRON_TAG)' | grep -Fv 'check-behind-prs.sh' | grep -F
 help:
 	@echo 'make run                          check your PRs once'
 	@echo 'make run-approve                  check teammates PRs once (dry-run unless APPROVE_DRY_RUN=0)'
-	@echo 'make resolve PR=<url|owner/repo#n>  stage a conflict-resolution session for one PR'
+	@echo 'make resolve PR=<url|owner/repo#n>  start a conflict-resolution session for one PR'
 	@echo 'make add-cron                     run both checks every 5 minutes'
 	@echo 'make remove-cron                  stop both checks'
 	@echo 'make check                        syntax-check every script'

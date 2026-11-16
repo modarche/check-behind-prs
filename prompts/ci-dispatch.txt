@@ -1,0 +1,14 @@
+   A push alone doesn't run this repo's CI, so start it yourself:
+   a. `gh workflow run ci.yml --ref {{HEAD_REF}}`. It prints the new run's URL, and the number at
+      its end is the run id. If it prints none, find the run with
+      `gh run list --workflow ci.yml --branch {{HEAD_REF}} --event workflow_dispatch --limit 5 --json databaseId,headSha,url,createdAt`:
+      the newest one whose headSha is the commit you pushed (retry for up to a minute).
+   b. `{{STATUS_CMD}} waiting-ci "CI run <id> for <short sha>" <run url>`
+   c. Start the watch with the Bash tool's run_in_background, so you are woken when the run ends:
+      `gh run watch <id> --exit-status --interval 60 > {{RUN_DIR}}/ci-watch.log 2>&1`
+      Don't poll in the foreground, and don't read that log while the run is going. When the watch
+      ends, read the result with `gh run view <id> --json conclusion,headSha,jobs`.
+   d. If the conclusion is cancelled, a newer run on this branch superseded it (the workflow
+      cancels in-progress runs per branch). Watch the newest run for the current head of
+      origin/{{HEAD_REF}} instead; if there is none, dispatch again.
+   e. success: record done.
