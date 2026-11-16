@@ -169,7 +169,7 @@ build_prompt() {
 		runtime_note="$(cat "$PROMPT_DIR/runtime-container.txt")"
 		hosts="$(jq -r '[.sidecars[].host] | join(", ")' <<< "$runtime")"
 		if [[ -n "$hosts" ]]; then
-			stores="It runs on a private network of its own, next to empty copies of the shared $hosts containers under the same hostnames and credentials, created for this run and deleted after it."
+			stores="It runs on a private network of its own, next to fresh, empty copies of the database and cache containers the app uses ($hosts), under the same hostnames and credentials, created for this run and deleted after it."
 		else
 			stores="It runs on a private network of its own with no database or cache containers, so tests that need one cannot run here."
 		fi

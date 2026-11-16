@@ -78,7 +78,9 @@ Starts an unattended `claude` session in a window of the `pr-autofix` tmux sessi
 **Its own containers.** Your dev containers mount your clone, so the session can't use them, and `make`, `docker compose` and the repos' pre-commit hooks would all reach them. Instead, `libexec/autofix-php <cmd>` runs commands in a throwaway container from the repo's own dev image, read from `docker-compose.dev.yml`:
 
 - it has the worktree mounted where the clone normally is, and runs as your user, so every file stays yours;
-- it sits on a private network with fresh, empty copies of the shared `mysql`, `mysql-test` and `localredis` containers that the app's config refers to: same image, credentials and hostnames;
+- it sits on a private network with fresh, empty copies of the database and cache containers the app's config refers to, under the same image, credentials and hostnames:
+  - the repo's own services from `docker-compose.dev.yml`, such as crm's and segment's `mysqltest`, started from their compose definition;
+  - the shared `mysql`, `mysql-test` and `localredis` containers, copied from the running ones;
 - the session can create, migrate and drop test databases there, but it cannot reach your databases, your dev container, or other services such as queues and search.
 
 Repos without a usable dev image (Go services, front-ends, libraries) get static checks only, and CI is the test signal.
@@ -208,7 +210,7 @@ If either file is missing or empty, the script does nothing.
 | `AUTOFIX_DISABLED=1` | Don't start `claude` sessions for conflicted PRs |
 | `AUTOFIX_MODEL` | Model the session runs (default `sonnet`) |
 | `AUTOFIX_MAX_RUNS` | Sessions that may run at once (default `3`) |
-| `AUTOFIX_SIDECARS` | Shared containers copied into each session's private network when the app refers to them (default `mysql mysql-test localredis`) |
+| `AUTOFIX_SIDECARS` | Shared containers copied into each session's private network when the app refers to them (default `mysql mysql-test localredis`). The repo's own database and cache services from `docker-compose.dev.yml` are always included when referred to |
 | `AUTOFIX_STALE_MINUTES` | Notify when a session's state hasn't changed for this long (default `180`) |
 | `AUTOFIX_WORKTREE_ROOT` | Where session worktrees go (default `$DEV_DIR/.pr-autofix`) |
 | `AUTOUPDATE_DISABLED=1` | Don't auto-update PRs that are merely behind |
