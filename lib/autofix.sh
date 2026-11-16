@@ -144,15 +144,51 @@ autofix_sidecar_spec() {
 			| map(select(test("^[0-9a-f]{12,64}$") | not)) | unique),
 		container: $name,
 		image: .Config.Image,
-		kind: (.Config.Image | if test("mysql|mariadb|percona") then "mysql" elif test("redis|valkey|keydb") then "redis" else "other" end),
+		kind: (.Config.Image | if test("mysql|mariadb|percona") then "mysql" elif test("postgres") then "postgres" elif test("redis|valkey|keydb") then "redis" else "other" end),
 		cmd: (.Config.Cmd // []),
 		tmpfs: ((.Config.Volumes // {}) | keys)
 	}' <<< "$info"
 }
 
+autofix_compose_store_specs() {
+	local config="$1" worktree="$2" run_id="$3"
+	jq -c --arg run "$run_id" --arg wt "$worktree/" '
+		[ .services // {} | to_entries[]
+		  | select(.key != "php" and .value.image != null and .value.entrypoint == null)
+		  | .value.image as $image
+		  | ($image | if test("mysql|mariadb|percona") then "mysql"
+		              elif test("postgres") then "postgres"
+		              elif test("redis|valkey|keydb") then "redis"
+		              elif test("mongo") then "mongo"
+		              else empty end) as $kind
+		  | {
+		      host: .key,
+		      aliases: ([.key, (.value.container_name // empty)] + [(.value.networks // {})[] | (.aliases // [])[]] | unique),
+		      container: "pr-autofix-\($run)-\(.key)",
+		      image: $image,
+		      kind: $kind,
+		      env: [(.value.environment // {}) | to_entries[] | select(.value != null) | "\(.key)=\(.value)"],
+		      cmd: (.value.command // [] | if type == "string" then split(" ") else . end),
+		      tmpfs: ([{mysql: "/var/lib/mysql", postgres: "/var/lib/postgresql/data", redis: "/data", mongo: "/data/db"}[$kind]]
+		              + [.value.volumes[]? | select(.type == "volume") | .target]
+		              + (.value.tmpfs // []) | unique),
+		      mounts: [.value.volumes[]? | select(.type == "bind" and (.source | startswith($wt))) | "\(.source):\(.target):ro"]
+		    }
+		]' <<< "$config"
+}
+
+autofix_referenced() {
+	local env_text="$1" alias pattern
+	while IFS= read -r alias; do
+		pattern="(^|[^A-Za-z0-9_.-])${alias//./\\.}([^A-Za-z0-9_.-]|\$)"
+		grep -qE "$pattern" <<< "$env_text" && return 0
+	done
+	return 1
+}
+
 autofix_detect_runtime() {
 	local worktree="$1" run_dir="$2" run_id="$3"
-	local config php image app_dir work_dir wt_real env_text host alias pattern spec sidecars='[]'
+	local config php image app_dir work_dir wt_real env_text host spec sidecars='[]'
 
 	[[ -f "$worktree/docker-compose.dev.yml" ]] || {
 		autofix_runtime_none "the repo has no docker-compose.dev.yml"
@@ -199,15 +235,18 @@ autofix_detect_runtime() {
 	' <<< "$php" > "$run_dir/container.env"
 
 	env_text="$(cat "$run_dir/container.env" "$worktree/.env" "$worktree/.env.test" 2> /dev/null || true)"
+	while IFS= read -r spec; do
+		[[ -n "$spec" ]] || continue
+		autofix_referenced "$env_text" < <(jq -r '.aliases[]' <<< "$spec") || continue
+		docker image inspect "$(jq -r '.image' <<< "$spec")" > /dev/null 2>&1 || continue
+		sidecars="$(jq -c --argjson s "$spec" '. + [$s]' <<< "$sidecars")"
+	done < <(autofix_compose_store_specs "$config" "$worktree" "$run_id" | jq -c '.[]')
+
 	for host in $AUTOFIX_SIDECARS; do
+		jq -e --arg h "$host" 'any(.[]; .aliases | index($h))' <<< "$sidecars" > /dev/null && continue
 		spec="$(autofix_sidecar_spec "$host" "$run_id")" || continue
-		while IFS= read -r alias; do
-			pattern="(^|[^A-Za-z0-9_.-])${alias//./\\.}([^A-Za-z0-9_.-]|\$)"
-			if grep -qE "$pattern" <<< "$env_text"; then
-				sidecars="$(jq -c --argjson s "$spec" '. + [$s]' <<< "$sidecars")"
-				break
-			fi
-		done < <(jq -r '.aliases[]' <<< "$spec")
+		autofix_referenced "$env_text" < <(jq -r '.aliases[]' <<< "$spec") || continue
+		sidecars="$(jq -c --argjson s "$spec" '. + [$s]' <<< "$sidecars")"
 	done
 
 	jq -nc \
@@ -234,12 +273,21 @@ autofix_start_sidecar() {
 	while IFS= read -r line; do
 		args+=(--network-alias "$line")
 	done < <(jq -r --arg host "$host" '(.aliases // [$host])[]' <<< "$spec")
-	while IFS= read -r line; do
-		[[ -n "$line" && "$line" != PATH=* ]] && args+=(-e "$line")
-	done < <(docker inspect --type container "$host" --format '{{range .Config.Env}}{{println .}}{{end}}' 2> /dev/null || true)
+	if jq -e 'has("env")' <<< "$spec" > /dev/null; then
+		while IFS= read -r line; do
+			[[ -n "$line" ]] && args+=(-e "$line")
+		done < <(jq -r '.env[]' <<< "$spec")
+	else
+		while IFS= read -r line; do
+			[[ -n "$line" && "$line" != PATH=* ]] && args+=(-e "$line")
+		done < <(docker inspect --type container "$host" --format '{{range .Config.Env}}{{println .}}{{end}}' 2> /dev/null || true)
+	fi
 	while IFS= read -r line; do
 		[[ -n "$line" ]] && args+=(--tmpfs "$line")
 	done < <(jq -r '.tmpfs[]' <<< "$spec")
+	while IFS= read -r line; do
+		[[ -n "$line" ]] && args+=(-v "$line")
+	done < <(jq -r '.mounts[]?' <<< "$spec")
 	args+=("$image")
 	while IFS= read -r line; do
 		args+=("$line")
@@ -252,6 +300,7 @@ autofix_sidecar_ready() {
 	local kind="$1" container="$2"
 	case "$kind" in
 		mysql) docker exec "$container" mysqladmin ping -h 127.0.0.1 --silent > /dev/null 2>&1 ;;
+		postgres) docker exec "$container" pg_isready -h 127.0.0.1 > /dev/null 2>&1 ;;
 		redis) docker exec "$container" sh -c 'valkey-cli ping 2>/dev/null || redis-cli ping' 2> /dev/null | grep -q PONG ;;
 		*) [[ "$(docker inspect -f '{{.State.Running}}' "$container" 2> /dev/null || true)" == "true" ]] ;;
 	esac
