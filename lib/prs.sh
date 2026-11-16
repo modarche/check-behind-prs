@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-MY_STUCK_PRS_QUERY='
+MY_OPEN_PRS_QUERY='
   query($endCursor: String) {
     viewer {
       pullRequests(
@@ -15,6 +15,7 @@ MY_STUCK_PRS_QUERY='
           mergeStateStatus
           mergeable
           baseRefName
+          baseRefOid
           headRefName
           headRefOid
           isDraft
@@ -33,17 +34,17 @@ MY_STUCK_PRS_QUERY='
   }
 '
 
-gh_my_stuck_prs() {
+gh_my_open_prs() {
 	local cursor="null" response page all='[]'
 
 	while :; do
-		response="$(gh api graphql -f query="$MY_STUCK_PRS_QUERY" -F endCursor="$cursor")" || return 1
+		response="$(gh api graphql -f query="$MY_OPEN_PRS_QUERY" -F endCursor="$cursor")" || return 1
 
 		page="$(
 			jq -c '
         [ .data.viewer.pullRequests.nodes[]
           | .behind = (.mergeStateStatus == "BEHIND" or (.viewerCanUpdateBranch and (.mergeStateStatus | IN("DIRTY", "UNKNOWN") | not)))
-          | select(.behind or (.mergeStateStatus == "DIRTY" and .mergeable == "CONFLICTING"))
+          | .stuck = (.behind or (.mergeStateStatus == "DIRTY" and .mergeable == "CONFLICTING"))
           | {
               key: (.repository.nameWithOwner + "|" + .url),
               repo: .repository.nameWithOwner,
@@ -51,7 +52,9 @@ gh_my_stuck_prs() {
               url,
               mergeStateStatus,
               behind,
+              stuck,
               baseRefName,
+              baseRefOid,
               headRefName,
               headRefOid,
               isDraft,

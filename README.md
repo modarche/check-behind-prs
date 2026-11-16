@@ -55,7 +55,19 @@ Every run sends a desktop notification for each newly detected PR, then acts bas
 
 GitHub only reports a PR as `BEHIND` when its base branch requires branches to be up to date before merging, so a PR stacked on another feature branch shows `CLEAN` however far behind it is. A PR therefore also counts as behind whenever GitHub would offer you its "Update branch" button (`viewerCanUpdateBranch`), unless it has conflicts or GitHub is still computing its merge state.
 
-Handled by `PUT /repos/{owner}/{repo}/pulls/{n}/update-branch`, the same call GitHub's "Update branch" button makes. Nothing is cloned, checked out or switched locally, so it also works for repos you don't have on disk. The PR's current head SHA is sent as `expected_head_sha`, so if someone pushes between detection and the update, GitHub refuses instead of merging into an unexpected state. A PR that can't be updated (branch protection, for example) is retried once per new commit rather than every 5 minutes.
+Handled by `PUT /repos/{owner}/{repo}/pulls/{n}/update-branch`, the same call GitHub's "Update branch" button makes. Nothing is cloned, checked out or switched locally, so it also works for repos you don't have on disk. The PR's current head SHA is sent as `expected_head_sha`, so if someone pushes between detection and the update, GitHub refuses instead of merging into an unexpected state. A PR that can't be updated (branch protection, for example) is retried once per new commit on its branch or its base, rather than every 5 minutes.
+
+### Stacked PRs
+
+When one of your PRs is based on another of yours (`master ← A ← B ← C`), the whole chain is brought up to date in one run, instead of one link per run. Each chain is walked from the bottom up. After updating a PR, the run waits for GitHub to finish the merge — it is asynchronous, usually a few seconds, at most 60 — then updates every PR based on that branch, even though GitHub still reports those as up to date. A PR updated only because its base moved raises no "behind" notification.
+
+The walk stops at a link it can't complete, and later runs carry on as before:
+
+- **The update never lands within 60 seconds**: everything above it waits for the next run.
+- **A PR above conflicts with its freshly updated base**: it gets a conflict-resolution session on the next run.
+- **A draft, a fork, or a teammate's PR in the chain**: the chain ends there.
+
+Native GitHub stacks, made with [`gh stack`](https://github.com/github/gh-stack) or the stack UI, are walked the same way, with merge commits — never a rebase, never a force-push. A stack links its PRs through the same base branches, so nothing extra is needed to find them. GitHub evaluates every PR in a stack against the stack's base, so a PR higher up can show as behind before the one below it is updated. The walk still updates it only after the one below, so it gets both changes in a single merge. GitHub requires a stack to have linear history to merge it as a stack; if its merge box asks, use **Rebase Stack** there, or `gh stack sync` locally, before landing.
 
 ### Behind with conflicts
 
