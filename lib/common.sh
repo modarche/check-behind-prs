@@ -17,7 +17,10 @@ mkdir -p "$STATE_DIR"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/check-behind-prs"
 
 BEHIND_STATE_FILE="$STATE_DIR/behind.json"
-AUTOFIX_STATE_FILE="$STATE_DIR/automation-state.json"
+AUTOFIX_RUNS_FILE="$STATE_DIR/autofix-runs.json"
+AUTOFIX_SKIPS_FILE="$STATE_DIR/autofix-skips.json"
+AUTOFIX_RUNS_DIR="$STATE_DIR/runs"
+AUTOFIX_CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/check-behind-prs"
 UPDATE_ATTEMPT_FILE="$STATE_DIR/update-branch-attempts.json"
 APPROVED_STATE_FILE="$STATE_DIR/approved.json"
 APPROVE_LOG_FILE="$STATE_DIR/auto-approve.log"
@@ -25,12 +28,18 @@ LOCK_FILE="$STATE_DIR/check-behind-prs.lock"
 APPROVE_LOCK_FILE="$STATE_DIR/auto-approve.lock"
 STAGE_LOCK_FILE="$STATE_DIR/stage-pr-autofix.lock"
 
-[[ -f "$AUTOFIX_STATE_FILE" ]] || printf '{}\n' > "$AUTOFIX_STATE_FILE"
+[[ -f "$AUTOFIX_RUNS_FILE" ]] || printf '{}\n' > "$AUTOFIX_RUNS_FILE"
+[[ -f "$AUTOFIX_SKIPS_FILE" ]] || printf '{}\n' > "$AUTOFIX_SKIPS_FILE"
 [[ -f "$UPDATE_ATTEMPT_FILE" ]] || printf '{}\n' > "$UPDATE_ATTEMPT_FILE"
 [[ -f "$APPROVED_STATE_FILE" ]] || printf '{}\n' > "$APPROVED_STATE_FILE"
 
 DEV_DIR="${DEV_DIR:-$HOME/dev}"
 TMUX_SESSION="pr-autofix"
+
+AUTOFIX_WORKTREE_ROOT="${AUTOFIX_WORKTREE_ROOT:-$DEV_DIR/.pr-autofix}"
+AUTOFIX_MAX_RUNS="${AUTOFIX_MAX_RUNS:-3}"
+AUTOFIX_SIDECARS="${AUTOFIX_SIDECARS:-mysql mysql-test localredis}"
+AUTOFIX_STALE_MINUTES="${AUTOFIX_STALE_MINUTES:-180}"
 
 require_commands() {
 	local cmd missing=()

@@ -18,7 +18,8 @@ if command -v flock > /dev/null 2>&1; then
 	flock -n 200 || exit 0
 fi
 
-stuck_json="$(gh_my_stuck_prs)" || exit 1
+open_json="$(gh_my_open_prs)" || exit 1
+stuck_json="$(jq -c '[.[] | select(.stuck)]' <<< "$open_json")"
 current_keys="$(jq -r '.[].key' <<< "$stuck_json" | sort -u)"
 
 if [[ -f "$BEHIND_STATE_FILE" ]]; then
@@ -51,5 +52,5 @@ if autofix_available; then
 fi
 
 if [[ "${AUTOUPDATE_DISABLED:-}" != "1" ]]; then
-	update_behind_prs "$stuck_json"
+	update_behind_prs "$open_json"
 fi

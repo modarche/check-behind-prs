@@ -1,60 +1,85 @@
-You are fixing GitHub PR #{{PR_NUMBER}} in {{OWNER}}/{{REPO}} ("{{PR_TITLE}}"), which
-is behind its base branch and/or has merge conflicts.
+You are bringing GitHub PR #{{PR_NUMBER}} in {{OWNER}}/{{REPO}} ("{{PR_TITLE}}") up to date
+with its base branch: merge the base in, resolve the conflicts, verify, push, and see CI through.
+Nobody is watching this session. It was started automatically, and nobody will answer questions
+in this chat.
 
 Repo: {{OWNER}}/{{REPO}}
 PR: {{PR_URL}}
-Base branch: {{BASE_REF}}
+Base branch: {{BASE_REF}} (origin/{{BASE_REF}} was {{BASE_SHA}} when this session started)
 Head branch: {{HEAD_REF}}
-Working directory: this exact checkout ({{REPO_DIR}}) — your own real clone, not a
-throwaway copy.
+Working directory: {{WORKTREE}}
+  A fresh git worktree made for this session alone, detached at origin/{{HEAD_REF}}
+  ({{HEAD_SHA}}). Stay on the detached HEAD and push with `git push origin HEAD:{{HEAD_REF}}`;
+  there is no local branch to switch to or back from.
 
-{{AUTHOR_NOTE}}Before touching anything:
-1. Run `git status --porcelain`. If it is not empty, or the currently checked-out
-   branch looks like it has unrelated work in progress, STOP and tell me — do not
-   switch branches out from under existing work.
-2. Note the currently checked-out branch so you can switch back to it at the end.
-3. Run `git fetch origin`. If a local branch named `{{HEAD_REF}}` already exists and
-   has commits not present on `origin/{{HEAD_REF}}`, that's unpushed local work —
-   STOP and ask rather than overwriting it.
+{{AUTHOR_NOTE}}Ground rules:
+- {{REPO_DIR}} is the developer's own clone, possibly in the middle of other work. Never change
+  anything in it, cd into it, or run git against it. Everything happens in this worktree.
+- Never open URLs in a browser. Never comment on, review, edit, merge or close the PR.
+- Never force-push, rebase, amend or squash, and never rewrite commits that are already on origin.
+- Record progress and the outcome with {{STATUS_CMD}}:
+    {{STATUS_CMD}} waiting-ci "<what you are waiting for>" <run url>
+    {{STATUS_CMD}} done "<one-line summary>"
+    {{STATUS_CMD}} blocked "<the exact question or decision you need from a human>"
+    {{STATUS_CMD}} failed "<what failed, with the evidence>"
+  blocked and failed send the developer a notification, and they will attach to this tmux window.
+  Whenever you would otherwise ask in chat, or stop because you are unsure, record blocked with the
+  question instead, then stop.
+- You are authorised to dispatch and re-run CI workflows on {{HEAD_REF}}, and to create, drop and
+  migrate databases inside this run's own throwaway containers (described in step 4).
 
-If the checks above pass:
-4. Check out `{{HEAD_REF}}` (create it tracking `origin/{{HEAD_REF}}` if it doesn't
-   exist locally yet).
-5. Merge the base branch in: `git merge origin/{{BASE_REF}}`.
-6. If there are conflicts, resolve them with intent in mind: for each conflicting
-   hunk, use `git log`, `git show`, and `git blame` on the relevant commits on BOTH
-   sides (base and head) to understand why each change was made, then produce a
-   resolution that honors both intents wherever that's actually possible. Do not
-   blindly prefer one side or mechanically keep both hunks without understanding
+1. Merge: `git fetch origin`, then `git merge --no-ff --no-commit origin/{{BASE_REF}}`.
+   If git answers "Already up to date", record done ("already up to date with {{BASE_REF}}") and stop.
+
+2. Resolve the conflicts with intent in mind: for each conflicting hunk, use `git log`, `git show`
+   and `git blame` on the relevant commits on BOTH sides (base and head) to understand why each
+   change was made, then produce a resolution that honours both intents wherever that's actually
+   possible. Do not blindly prefer one side, or mechanically keep both hunks without understanding
    them.
-7. Lockfiles (composer.lock, package-lock.json, yarn.lock, pnpm-lock.yaml,
-   Cargo.lock, go.sum, etc.) are generated files — never
-   hand-resolve their conflict markers. Resolve the source file they're generated
-   from (composer.json, package.json, etc.) normally, then regenerate the lockfile
-   by running an update scoped to exactly the package(s) whose version constraint
-   changed in this PR — diff composer.json/package.json between the merge parents
-   to find them.
-   - For composer specifically: run `composer update <package/name> [<package/name-2> ...]`
-     for just those packages. NEVER pass `--with-all-dependencies` (or run a bare
-     unscoped `composer update`) — it lets the update cascade into those packages'
-     own transitive dependencies too, pulling in far more than this PR intends.
-   - Run the tool the way this project runs it, rather than assuming a bare
-     `composer`/`npm` on the host is right. If the repo has a
-     `docker-compose.dev.yml` with a php service, that means running it inside
-     the container:
-     `docker compose -f docker-compose.dev.yml exec -it php composer update <package/name>`
-     Check the repo's README and Makefile for the project's own wrapper before
-     falling back to this.
-   - The same "scope it to what actually changed, don't let it cascade" principle
-     applies to any other package manager's update command too.
-8. Verify your fix using the project's own test/build tooling — check its README
-   and Makefile for the right commands — before committing.
-9. Commit with a clear message and include this trailer:
-   Co-Authored-By: Claude <noreply@anthropic.com>
-10. Push: `git push origin HEAD:{{HEAD_REF}}`. Never force-push under any
-    circumstance — if the push is rejected, stop and tell me rather than retrying
-    with force.
-11. Switch back to the branch you noted in step 2.
 
-I'm here and watching — if you're genuinely unsure about anything at any point,
-stop and ask rather than guessing.
+3. Lockfiles (composer.lock, package-lock.json, yarn.lock, pnpm-lock.yaml, Cargo.lock, go.sum,
+   etc.) are generated files: never hand-resolve their conflict markers. Resolve the source file
+   they're generated from (composer.json, package.json, etc.) normally, then regenerate the
+   lockfile by running an update scoped to exactly the package(s) whose version constraint changed
+   in this PR. Diff composer.json/package.json between the merge parents to find them.
+   - For composer: `composer update --no-scripts <package/name> [<package/name-2> ...]` for just
+     those packages, run as step 4 describes. NEVER pass `--with-all-dependencies`, and never run a bare
+     unscoped `composer update`: it lets the update cascade into those packages' own transitive
+     dependencies, pulling in far more than this PR intends.
+   - The same "scope it to what actually changed, don't let it cascade" principle applies to any
+     other package manager's update command.
+
+4. Verify before committing.
+{{RUNTIME_NOTE}}
+
+5. Commit the merge. Git hooks are switched off in this session, so write the subject exactly as
+   `{{COMMIT_PREFIX}}merge {{BASE_REF}}` and end the message with this trailer:
+   Co-Authored-By: Claude <noreply@anthropic.com>
+
+6. Push: `git push origin HEAD:{{HEAD_REF}}`. If it is rejected because the branch moved, run
+   `git fetch origin` and `git merge origin/{{HEAD_REF}}` (a plain merge, subject
+   `{{COMMIT_PREFIX}}merge origin/{{HEAD_REF}}`, same trailer), resolve and verify again if it
+   brought anything in, and push once more. If it is rejected a second time, or for any other
+   reason (permissions, branch protection), record blocked with the push output.
+
+7. CI.
+{{CI_NOTE}}
+
+   When CI fails, read the failed jobs' logs (`gh run view <id> --log-failed`) and decide whether
+   the failure comes from this merge:
+   - Yours to fix: code from one side no longer fits code from the other (renamed or re-signed
+     methods, moved classes, changed config keys), tests asserting behaviour the other side
+     changed, duplicate migration versions, lockfile or composer.json mismatches, YAML or workflow
+     files broken by the resolution. Fix it in this worktree, verify as in step 4, commit (subject
+     `{{COMMIT_PREFIX}}<what the fix does>`, same trailer), push as in step 6, and run CI again.
+     At most two fix rounds; if CI still fails after that, record failed.
+   - Not yours: the same job also fails on the base branch's latest run (check with
+     `gh run list --workflow <workflow file> --branch {{BASE_REF}} --limit 3 --json conclusion,headSha,url`),
+     failures in code neither side of the merge touched, or infrastructure (runner, registry,
+     network, timeouts). For a clear infrastructure failure, re-run the failed jobs once with
+     `gh run rerun <id> --failed` and watch again. Otherwise record failed with the failing job,
+     the error, and why it isn't the merge's doing.
+
+8. Finish by recording exactly one of done, blocked or failed (the last record wins), then write a
+   short summary in chat: what conflicted, how you resolved it, what you verified and what you
+   didn't, and the CI result.

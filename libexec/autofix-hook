@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+event="${1:-}"
+run_dir="${2:-}"
+input="$(cat)"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/../lib/common.sh"
+source "$SCRIPT_DIR/../lib/autofix.sh"
+
+[[ -n "$run_dir" && -f "$run_dir/run.json" ]] || exit 0
+
+state="$(autofix_status_state "$run_dir")"
+eval "$(jq -r '@sh "label=\(.sessionName) window_name=\(.windowName) pr_url=\(.url)"' "$run_dir/run.json")"
+attach="tmux attach -t $TMUX_SESSION:$window_name"
+status_cmd="$LIBEXEC_DIR/autofix-status"
+
+case "$event" in
+	started)
+		[[ -n "$state" ]] || autofix_write_status "$run_dir" working "Session started"
+		;;
+
+	notify)
+		type="$(jq -r '.notification_type // ""' <<< "$input")"
+		case "$type" in
+			idle_prompt | auth_success | elicitation_complete | elicitation_response | agent_completed | quota_auto_resume_*) exit 0 ;;
+		esac
+		message="$(jq -r '.message // "Claude is waiting for input"' <<< "$input")"
+		autofix_notify "PR $label: Claude needs you" "$message
+$attach" "$pr_url"
+		;;
+
+	stop)
+		case "$state" in
+			done | blocked | failed) exit 0 ;;
+		esac
+		background="$(jq -r '.background_tasks | if type == "array" then (length > 0 | tostring) else "unknown" end' <<< "$input")"
+		[[ "$background" == "true" ]] && exit 0
+		[[ "$state" == "waiting-ci" && "$background" == "unknown" ]] && exit 0
+
+		if [[ "$(jq -r '.stop_hook_active // false' <<< "$input")" == "true" ]]; then
+			autofix_notify "PR $label: Claude stopped" "It stopped without recording done, blocked or failed (last state: ${state:-none}).
+$attach" "$pr_url"
+			exit 0
+		fi
+
+		if [[ "$state" == "waiting-ci" ]]; then
+			reason="You recorded waiting-ci, but no background watch is running, so CI may have finished. Check the run with gh run view, then either restart the watch with run_in_background or record the outcome."
+		else
+			reason="Nothing is running in the background and no outcome is recorded. If the work is finished, or you need a human, record it now: $status_cmd done|blocked|failed \"<message>\". If you are waiting on CI, start its gh run watch with run_in_background before you stop."
+		fi
+		jq -n --arg r "$reason" '{decision: "block", reason: $r}'
+		;;
+esac
+exit 0

@@ -31,6 +31,19 @@ log_decision() {
 	printf '%s\t%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$1" "$2" "$3" >> "$APPROVE_LOG_FILE"
 }
 
+merge_state_of() {
+	local state
+	state="$(
+		gh api graphql \
+			-f query='query($owner: String!, $name: String!, $number: Int!) {
+			  repository(owner: $owner, name: $name) { pullRequest(number: $number) { mergeStateStatus } }
+			}' \
+			-f owner="${1%%/*}" -f name="${1#*/}" -F number="$2" \
+			--jq '.data.repository.pullRequest.mergeStateStatus' 2> /dev/null
+	)" || return 0
+	printf '%s' "$state"
+}
+
 authors="$(read_config_list "$AUTHORS_FILE")"
 reviewers="$(read_config_list "$REVIEWERS_FILE")"
 
@@ -65,7 +78,6 @@ response="$(
               baseRefName
               isDraft
               isCrossRepository
-              mergeStateStatus
               mergeable
               author { login }
               repository { nameWithOwner }
@@ -84,10 +96,11 @@ response="$(
           }
         }
       }
-    ' -f q="$search_query" 2> /dev/null || true
-)"
-
-[[ -n "$response" ]] || exit 1
+    ' -f q="$search_query"
+)" || {
+	log_decision "-" "error" "PR search failed"
+	exit 1
+}
 
 candidates="$(
 	jq -c --arg viewer "$viewer" --argjson trusted "$reviewers_json" '
@@ -119,7 +132,6 @@ candidates="$(
         baseRef: $pr.baseRefName,
         isDraft: $pr.isDraft,
         isCrossRepository: $pr.isCrossRepository,
-        mergeStateStatus: $pr.mergeStateStatus,
         mergeable: $pr.mergeable,
         mine: ($approvals | map(select(.login == $viewer)) | sort_by(.submittedAt)),
         trusted: ($approvals | map(select(.login as $l | $trusted | index($l))) | sort_by(.submittedAt))
@@ -150,10 +162,9 @@ while IFS= read -r pr; do
 		continue
 	}
 
-	merge_state="$(jq -r '.mergeStateStatus' <<< "$pr")"
 	mergeable="$(jq -r '.mergeable' <<< "$pr")"
-	if [[ "$mergeable" != "MERGEABLE" ]] || [[ "$merge_state" == "BEHIND" || "$merge_state" == "DIRTY" || "$merge_state" == "UNKNOWN" ]]; then
-		log_decision "$slug" "skip" "not up to date (mergeStateStatus=$merge_state mergeable=$mergeable)"
+	if [[ "$mergeable" != "MERGEABLE" ]]; then
+		log_decision "$slug" "skip" "not up to date (mergeable=$mergeable)"
 		continue
 	fi
 
@@ -174,6 +185,12 @@ while IFS= read -r pr; do
 	fi
 	if [[ "$trusted_latest" == "$head" ]]; then
 		log_decision "$slug" "skip" "trusted approval already at head, no merge to restore"
+		continue
+	fi
+
+	merge_state="$(merge_state_of "$repo" "$number")"
+	if [[ -z "$merge_state" || "$merge_state" == "BEHIND" || "$merge_state" == "DIRTY" || "$merge_state" == "UNKNOWN" ]]; then
+		log_decision "$slug" "skip" "not up to date (mergeStateStatus=${merge_state:-unavailable})"
 		continue
 	fi
 
