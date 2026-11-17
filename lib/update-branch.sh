@@ -68,7 +68,10 @@ update_pr_branch() {
 	until gh api --method PUT "repos/$repo/pulls/$pr_number/update-branch" \
 		-f expected_head_sha="$head_oid" > /dev/null 2>&1; do
 		attempts=$((attempts - 1))
-		((attempts > 0)) || return 1
+		if ((attempts <= 0)); then
+			json_update "$UPDATE_REFUSED_FILE" --arg key "$key" --arg oid "$head_oid" '.[$key] = $oid'
+			return 1
+		fi
 		sleep "$UPDATE_POLL_INTERVAL"
 	done
 }
