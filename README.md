@@ -48,6 +48,7 @@ Every run sends a desktop notification for each newly detected PR, then acts bas
 | PR state | Action |
 | --- | --- |
 | Behind base, no conflicts | Updated automatically through the GitHub API — no local checkout involved |
+| Behind base, the API refuses the update (for example a base that changed `.github/workflows/*` and a token without the `workflow` scope) | The same `claude` session as for conflicts, staged on the next run: it merges the base in a worktree and pushes |
 | Behind base, with conflicts | A `claude` session is staged in a tmux window with a resolution prompt ready to submit |
 | Anything else | Notification only |
 

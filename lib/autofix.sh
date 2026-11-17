@@ -480,9 +480,13 @@ $attach" "$pr_url"
 autofix_stage_conflicted() {
 	local stuck_json="$1" eligible_json pr repo owner short_repo url pr_number base_ref head_ref title
 
-	eligible_json="$(jq -c '
-		[.[] | select(.isDraft == false and .isCrossRepository == false and .mergeStateStatus == "DIRTY")] as $dirty
-		| [$dirty[] | . as $pr | select([$dirty[] | select(.repo == $pr.repo and .headRefName == $pr.baseRefName)] | length == 0)]
+	eligible_json="$(jq -c --slurpfile refused "$UPDATE_REFUSED_FILE" '
+		[.[] | select(
+			.isDraft == false and .isCrossRepository == false
+			and (.mergeStateStatus == "DIRTY"
+				or (.behind and ($refused[0][.repo + "#" + (.url | split("/") | last)] == .headRefOid)))
+		)] as $needs
+		| [$needs[] | . as $pr | select([$needs[] | select(.repo == $pr.repo and .headRefName == $pr.baseRefName)] | length == 0)]
 	' <<< "$stuck_json")"
 
 	while IFS= read -r pr; do
