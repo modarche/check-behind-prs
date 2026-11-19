@@ -4,7 +4,7 @@ MY_OPEN_PRS_QUERY='
   query($endCursor: String) {
     viewer {
       pullRequests(
-        first: 100
+        first: 20
         after: $endCursor
         states: OPEN
         orderBy: { field: CREATED_AT, direction: DESC }

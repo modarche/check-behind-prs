@@ -65,10 +65,10 @@ reviewers_json="$(jq -Rsc 'split("\n") | map(select(length > 0))' <<< "$reviewer
 
 search_query="is:pr is:open org:$APPROVE_ORG$author_filter"
 
-response="$(
-	gh api graphql -f query='
-      query($q: String!) {
-        search(query: $q, type: ISSUE, first: 100) {
+SEARCH_QUERY='
+      query($q: String!, $endCursor: String) {
+        search(query: $q, type: ISSUE, first: 25, after: $endCursor) {
+          pageInfo { hasNextPage endCursor }
           nodes {
             ... on PullRequest {
               number
@@ -96,15 +96,26 @@ response="$(
           }
         }
       }
-    ' -f q="$search_query"
-)" || {
-	log_decision "-" "error" "PR search failed"
-	exit 1
-}
+    '
+
+nodes='[]'
+cursor=null
+while :; do
+	page="$(gh api graphql -f query="$SEARCH_QUERY" -f q="$search_query" -F endCursor="$cursor")" || {
+		log_decision "-" "error" "PR search failed"
+		exit 1
+	}
+	nodes="$(jq -c --argjson page "$(jq -c '.data.search.nodes' <<< "$page")" '. + $page' <<< "$nodes")" || {
+		log_decision "-" "error" "PR search returned an unreadable page"
+		exit 1
+	}
+	[[ "$(jq -r '.data.search.pageInfo.hasNextPage' <<< "$page")" == "true" ]] || break
+	cursor="$(jq -r '.data.search.pageInfo.endCursor' <<< "$page")"
+done
 
 candidates="$(
 	jq -c --arg viewer "$viewer" --argjson trusted "$reviewers_json" '
-    .data.search.nodes[]
+    .[]
     | select(.number != null)
     | . as $pr
     | ($pr.timelineItems.nodes // []) as $dismissals
@@ -136,7 +147,7 @@ candidates="$(
         mine: ($approvals | map(select(.login == $viewer)) | sort_by(.submittedAt)),
         trusted: ($approvals | map(select(.login as $l | $trusted | index($l))) | sort_by(.submittedAt))
       }
-  ' <<< "$response"
+  ' <<< "$nodes"
 )"
 
 while IFS= read -r pr; do
