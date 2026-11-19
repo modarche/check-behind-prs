@@ -34,7 +34,7 @@ case "$state" in
 tmux attach -t $TMUX_SESSION:$window_name" "$pr_url"
 		;;
 	done)
-		autofix_notify "PR $label: done" "$message" "$pr_url" 8000
+		autofix_notify "PR $label: done" "$message" "$pr_url" 2000
 		;;
 esac
 
